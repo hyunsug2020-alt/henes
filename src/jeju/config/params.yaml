@@ -1,0 +1,10 @@
+teleop_node:
+  ros__parameters:
+    max_velocity: 20
+    max_steering: 80
+
+serial_bridge_node:
+  ros__parameters:
+    port: /dev/henes_arduino
+    baud: 57600
+    timeout: 1.0
