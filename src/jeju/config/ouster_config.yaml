@@ -1,0 +1,11 @@
+/**:
+  ros__parameters:
+    sensor_hostname: "192.168.0.55"
+    lidar_port: 7502
+    imu_port: 7503
+    lidar_mode: "1024x10"
+    timestamp_mode: "TIME_FROM_ROS_RECEPTION"  # 이걸로 변경
+    sensor_frame: "os_sensor"
+    laser_frame: "os_lidar"
+    imu_frame: "os_imu"
+    point_type: "original"

@@ -168,7 +168,7 @@ ros2 run jeju serial_bridge_node.py --ros-args -p port:=/dev/henes_arduino
 
 ## 제어 경로 정리
 
-- 현재 모터/조향 제어의 단일 경로는 `jeju/control/serial_bridge_node.py` 입니다.
+- 현재 모터/조향 제어의 단일 경로는 `control/serial_bridge_node.py` 입니다.
 - `cmd_vel` 명령은 `serial_bridge_node`를 통해 제어보드로 전달됩니다.
 - 기존 C++ 제어 노드는 더 이상 사용하지 않으며 제거되었습니다.
 

@@ -63,6 +63,8 @@ def generate_launch_description():
     enable_wheel_odom = DeclareLaunchArgument('enable_wheel_odom', default_value='false')
     enable_path_maker = DeclareLaunchArgument('enable_path_maker', default_value='false')
     enable_follower = DeclareLaunchArgument('enable_follower', default_value='true')
+    enable_mpc_path_maker = DeclareLaunchArgument('enable_mpc_path_maker', default_value='false')
+    enable_mpc_follower = DeclareLaunchArgument('enable_mpc_follower', default_value='false')
     enable_imu = DeclareLaunchArgument('enable_imu', default_value='true')
     enable_lidar = DeclareLaunchArgument('enable_lidar', default_value='true')
     enable_ntrip = DeclareLaunchArgument('enable_ntrip', default_value='true')
@@ -77,11 +79,12 @@ def generate_launch_description():
         ])
     )
     path_maker_odom_topic = DeclareLaunchArgument('path_maker_odom_topic', default_value='/odometry/filtered')
+    mpc_path_maker_odom_topic = DeclareLaunchArgument('mpc_path_maker_odom_topic', default_value='/odometry/filtered')
 
     ouster_params_file = DeclareLaunchArgument(
         'ouster_params_file',
         default_value=PathJoinSubstitution([
-            FindPackageShare('slam_controller'),
+            FindPackageShare('jeju'),
             'config',
             'ouster_config.yaml',
         ])
@@ -177,6 +180,25 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_path_maker')),
     )
 
+    mpc_path_maker_node = Node(
+        package='jeju',
+        executable='mpc_path_maker_node',
+        name='mpc_path_maker_node',
+        output='screen',
+        parameters=[{
+            'odom_topic': LaunchConfiguration('mpc_path_maker_odom_topic'),
+        }],
+        condition=IfCondition(LaunchConfiguration('enable_mpc_path_maker')),
+    )
+
+    mpc_path_follower_node = Node(
+        package='jeju',
+        executable='mpc_path_follower_node',
+        name='mpc_path_follower_node',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('enable_mpc_follower')),
+    )
+
     imu_node = Node(
         package='my_imu_driver',
         executable='imu_node',
@@ -225,12 +247,15 @@ def generate_launch_description():
         enable_wheel_odom,
         enable_path_maker,
         enable_follower,
+        enable_mpc_path_maker,
+        enable_mpc_follower,
         enable_imu,
         enable_lidar,
         enable_ntrip,
         imu_device,
         jeju_params_file,
         path_maker_odom_topic,
+        mpc_path_maker_odom_topic,
         ouster_params_file,
         gps_launch_file,
         gps_namespace,
@@ -249,7 +274,9 @@ def generate_launch_description():
         wheel_odom_node,
         gps_launch,
         path_maker_node,
+        mpc_path_maker_node,
         path_follower_node,
+        mpc_path_follower_node,
         imu_node,
         lidar_launch,
         ntrip_node,
