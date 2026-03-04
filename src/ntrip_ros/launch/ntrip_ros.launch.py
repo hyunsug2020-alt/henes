@@ -13,8 +13,8 @@ def generate_launch_description():
         name='ntrip_ros',
         output='screen',
         parameters=[{
-            # ublox_gps 드라이버 RTCM 구독 토픽
-            'rtcm_topic': '/ublox_gps/rtcm',
+            # ublox_dgnss 입력 기본 토픽
+            'rtcm_topic': '/ntrip_client/rtcm',
             
             # 국토지리정보원 서버 설정
             'ntrip_server': 'RTS1.ngii.go.kr:2101',

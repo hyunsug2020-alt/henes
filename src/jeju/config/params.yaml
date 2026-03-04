@@ -1,10 +1,14 @@
 teleop_node:
   ros__parameters:
-    max_velocity: 20
+    max_velocity: 80
     max_steering: 80
+    steering_axis: 3
+    manual_button_idx: 4
+    auto_button_idx: 5
 
 serial_bridge_node:
   ros__parameters:
     port: /dev/henes_arduino
     baud: 57600
     timeout: 1.0
+    rx_watchdog_sec: 0.0

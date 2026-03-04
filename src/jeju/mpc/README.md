@@ -17,6 +17,8 @@
 
 ## 핵심 파라미터
 - `wheelbase_m`: 차량 축거
+- `vehicle_width_m`: 차량 가로 폭 (wheel-to-wheel)
+- `vehicle_length_m`: 차량 세로 길이
 - `forward_speed_kmh`: 목표 속도
 - `prediction_horizon`: 예측 스텝 수
 - `w_d`, `w_theta`, `w_kappa`: 비용함수 가중치

@@ -56,7 +56,8 @@ private:
   double forward_speed_kmh_ {8.0};
   double slope_factor_ {1.0};
   double goal_tolerance_m_ {1.0};
+  double vehicle_width_m_ {0.70};
+  double vehicle_length_m_ {1.30};
 };
 
 }  // namespace jeju_mpc
-

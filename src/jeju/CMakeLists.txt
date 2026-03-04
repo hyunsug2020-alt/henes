@@ -12,6 +12,7 @@ find_package(rclpy REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(ublox_ubx_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 
@@ -73,6 +74,7 @@ ament_target_dependencies(gps_rtk_gui_node
   rclcpp
   std_msgs
   sensor_msgs
+  ublox_ubx_msgs
 )
 target_link_libraries(gps_rtk_gui_node
   ${OpenCV_LIBRARIES}

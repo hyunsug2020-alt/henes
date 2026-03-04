@@ -34,6 +34,9 @@ class StatusInfoNode(Node):
         self.declare_parameter("max_pitch", 0.35)
         self.declare_parameter("max_uphill_factor", 4.5)
         self.declare_parameter("max_downhill_factor", 0.8)
+        self.declare_parameter("gps_fix_topic", "/fix")
+        self.declare_parameter("gps_vel_topic", "/ublox_gps/fix_velocity")
+        self.declare_parameter("imu_topic", "/imu")
 
         self.utm_zone = int(self.get_parameter("utm_zone").value)
         self.odom_frame = str(self.get_parameter("odom_frame").value)
@@ -43,6 +46,9 @@ class StatusInfoNode(Node):
         self.max_pitch = float(self.get_parameter("max_pitch").value)
         self.max_uphill_factor = float(self.get_parameter("max_uphill_factor").value)
         self.max_downhill_factor = float(self.get_parameter("max_downhill_factor").value)
+        gps_fix_topic = str(self.get_parameter("gps_fix_topic").value)
+        gps_vel_topic = str(self.get_parameter("gps_vel_topic").value)
+        imu_topic = str(self.get_parameter("imu_topic").value)
 
         self.origin_set = False
         self.origin_x = 0.0
@@ -76,9 +82,15 @@ class StatusInfoNode(Node):
         self.slope_pub = self.create_publisher(Float64, "/slope_factor", 10)
         self.quality_pub = self.create_publisher(Float64, "/gps/quality", 10)
 
-        self.create_subscription(NavSatFix, "/ublox_gps/fix", self.gps_cb, 20)
-        self.create_subscription(TwistWithCovarianceStamped, "/ublox_gps/fix_velocity", self.gps_vel_cb, 20)
-        self.create_subscription(Imu, "/ublox_gps/imu", self.imu_cb, 20)
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=20,
+        )
+        self.create_subscription(NavSatFix, gps_fix_topic, self.gps_cb, sensor_qos)
+        self.create_subscription(TwistWithCovarianceStamped, gps_vel_topic, self.gps_vel_cb, sensor_qos)
+        self.create_subscription(Imu, imu_topic, self.imu_cb, sensor_qos)
         self.create_subscription(Twist, "/cmd_vel", self.cmd_cb, 10)
 
         self.create_timer(0.02, self.publish_state)
@@ -90,7 +102,9 @@ class StatusInfoNode(Node):
         else:
             self.get_logger().warn("pyproj not found. Fallback LL->XY conversion will be used.")
 
-        self.get_logger().info("Status info node started (ROS 2 Humble)")
+        self.get_logger().info(
+            f"Status info node started (ROS 2 Humble) | fix={gps_fix_topic} vel={gps_vel_topic} imu={imu_topic}"
+        )
 
     def cmd_cb(self, _: Twist) -> None:
         # Reserved for future compatibility with legacy logic.

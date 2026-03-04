@@ -11,7 +11,9 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
 : Node("mpc_path_tracker_cpp")
 {
   this->declare_parameter("control_rate_hz", 20.0);
-  this->declare_parameter("wheelbase_m", 1.04);
+  this->declare_parameter("wheelbase_m", 0.77);
+  this->declare_parameter("vehicle_width_m", 0.70);
+  this->declare_parameter("vehicle_length_m", 1.30);
   this->declare_parameter("forward_speed_kmh", 8.0);
   this->declare_parameter("prediction_horizon", 15);
   this->declare_parameter("dt", 0.1);
@@ -28,6 +30,8 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
   control_rate_hz_ = this->get_parameter("control_rate_hz").as_double();
   forward_speed_kmh_ = this->get_parameter("forward_speed_kmh").as_double();
   goal_tolerance_m_ = this->get_parameter("goal_tolerance_m").as_double();
+  vehicle_width_m_ = this->get_parameter("vehicle_width_m").as_double();
+  vehicle_length_m_ = this->get_parameter("vehicle_length_m").as_double();
 
   controller_params_.wheelbase_m = this->get_parameter("wheelbase_m").as_double();
   controller_params_.prediction_horizon = this->get_parameter("prediction_horizon").as_int();
@@ -72,7 +76,8 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
 
   RCLCPP_INFO(
     this->get_logger(),
-    "Single-vehicle MPC tracker ready. Goal stop enabled (tol=%.2fm)", goal_tolerance_m_);
+    "Single-vehicle MPC tracker ready. wheelbase=%.2fm, size=%.2fm x %.2fm, goal_tol=%.2fm",
+    controller_params_.wheelbase_m, vehicle_width_m_, vehicle_length_m_, goal_tolerance_m_);
 }
 
 void MPCPathTrackerCpp::odomCb(const nav_msgs::msg::Odometry::SharedPtr msg)

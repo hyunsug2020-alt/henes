@@ -8,7 +8,7 @@ namespace jeju_mpc
 
 struct MPCControllerParams
 {
-  double wheelbase_m {1.04};
+  double wheelbase_m {0.77};
   double dt {0.1};
   int prediction_horizon {15};
   double w_d {1.0};
