@@ -41,7 +41,7 @@ class PathFollowerNode(Node):
         self.has_path = False
         self.has_odom = False
         self.has_heading = False
-        self.teleop_mode = True
+        self.teleop_mode = False
         self.obstacle_stop = False
         self.slope_factor = 1.0
         self.fused_heading_deg = 0.0
@@ -142,7 +142,8 @@ class PathFollowerNode(Node):
             self.direction_profile[i] = direction
 
     def get_pwm_speed(self, target_kmh: float) -> float:
-        return abs(target_kmh) * (255.0 / 25.5) * self.slope_factor
+        pwm = abs(target_kmh) * (255.0 / 25.5) * self.slope_factor
+        return max(0.0, min(255.0, pwm))
 
     def constrain_steer(self, steer_deg: float) -> float:
         return max(-self.max_steer_deg, min(self.max_steer_deg, steer_deg))

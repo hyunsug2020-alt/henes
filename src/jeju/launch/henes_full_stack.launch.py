@@ -196,6 +196,9 @@ def generate_launch_description():
         executable='mpc_path_follower_node',
         name='mpc_path_follower_node',
         output='screen',
+        parameters=[PathJoinSubstitution([
+            FindPackageShare('jeju'), 'config', 'params.yaml'
+        ])],
         condition=IfCondition(LaunchConfiguration('enable_mpc_follower')),
     )
 

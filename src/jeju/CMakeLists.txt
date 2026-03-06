@@ -15,6 +15,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(ublox_ubx_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 find_path(OSQP_INCLUDE_DIR
   NAMES osqp.h
@@ -38,6 +39,7 @@ add_executable(mpc_path_follower_node
 target_include_directories(mpc_path_follower_node PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/mpc/include
   ${OSQP_INCLUDE_DIR}
+  ${EIGEN3_INCLUDE_DIRS}
 )
 ament_target_dependencies(mpc_path_follower_node
   osqp_vendor
@@ -49,6 +51,7 @@ ament_target_dependencies(mpc_path_follower_node
 )
 target_link_libraries(mpc_path_follower_node
   ${OSQP_LIBRARY}
+  Eigen3::Eigen
 )
 
 add_executable(mpc_path_maker_node

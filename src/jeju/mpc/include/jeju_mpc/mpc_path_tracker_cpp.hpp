@@ -25,6 +25,7 @@ private:
   void teleopModeCb(const std_msgs::msg::Bool::SharedPtr msg);
   void obstacleStopCb(const std_msgs::msg::Bool::SharedPtr msg);
   void slopeFactorCb(const std_msgs::msg::Float64::SharedPtr msg);
+  void steeringAngleCb(const std_msgs::msg::Float64::SharedPtr msg);
   void controlLoop();
 
   static double yawFromQuaternion(const geometry_msgs::msg::Quaternion & q);
@@ -38,6 +39,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr teleop_mode_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr obstacle_stop_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr slope_factor_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr steering_angle_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   MPCControllerCpp controller_;
@@ -48,7 +50,7 @@ private:
 
   bool has_odom_ {false};
   bool has_path_ {false};
-  bool teleop_mode_ {true};
+  bool teleop_mode_ {false};
   bool obstacle_stop_ {false};
   bool goal_reached_latched_ {false};
 
@@ -56,6 +58,8 @@ private:
   double forward_speed_kmh_ {8.0};
   double slope_factor_ {1.0};
   double goal_tolerance_m_ {1.0};
+  double wheelbase_m_ {1.04};
+  double current_steer_deg_ {0.0};
   double vehicle_width_m_ {0.70};
   double vehicle_length_m_ {1.30};
 };

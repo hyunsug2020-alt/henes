@@ -12,3 +12,19 @@ serial_bridge_node:
     baud: 57600
     timeout: 1.0
     rx_watchdog_sec: 0.0
+
+mpc_path_follower_node:
+  ros__parameters:
+    wheelbase_m: 1.04
+    forward_speed_kmh: 3.0
+    prediction_horizon: 15
+    dt: 0.1
+    w_d: 1.0
+    w_theta: 0.5
+    w_kappa: 0.05
+    w_u: 0.2
+    goal_tolerance_m: 1.0
+    max_steer_deg: 55.0
+    kappa_min: -0.9
+    kappa_max: 0.9
+    kappa_samples: 31

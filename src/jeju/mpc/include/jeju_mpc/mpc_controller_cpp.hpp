@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <Eigen/Dense>
 #include <optional>
 #include <vector>
 
@@ -26,6 +28,7 @@ struct RefPoint
   double x {0.0};
   double y {0.0};
   double yaw {0.0};
+  double kappa_r {0.0};
 };
 
 struct VehicleState
@@ -33,6 +36,16 @@ struct VehicleState
   double x {0.0};
   double y {0.0};
   double yaw {0.0};
+  double kappa {0.0};
+};
+
+struct FrenetState
+{
+  double dr {0.0};
+  double dtheta {0.0};
+  double kappa {0.0};
+  double theta_r {0.0};
+  double kappa_r {0.0};
 };
 
 struct MPCControlOutput
@@ -69,6 +82,17 @@ private:
     int nearest_idx,
     double speed_mps,
     double curvature) const;
+
+  FrenetState cartesianToFrenet(
+    const VehicleState & state,
+    const std::vector<RefPoint> & path,
+    int nearest_idx) const;
+
+  FrenetState propagateFrenet(
+    const FrenetState & fs,
+    double kappa_cmd,
+    double v,
+    double kappa_r_next) const;
 
   MPCControllerParams params_;
 };

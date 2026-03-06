@@ -11,7 +11,7 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
 : Node("mpc_path_tracker_cpp")
 {
   this->declare_parameter("control_rate_hz", 20.0);
-  this->declare_parameter("wheelbase_m", 0.77);
+  this->declare_parameter("wheelbase_m", 1.04);
   this->declare_parameter("vehicle_width_m", 0.70);
   this->declare_parameter("vehicle_length_m", 1.30);
   this->declare_parameter("forward_speed_kmh", 8.0);
@@ -69,6 +69,11 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
     "/slope_factor", 10,
     std::bind(&MPCPathTrackerCpp::slopeFactorCb, this, std::placeholders::_1));
 
+  wheelbase_m_ = this->get_parameter("wheelbase_m").as_double();
+  steering_angle_sub_ = this->create_subscription<std_msgs::msg::Float64>(
+    "/steering_angle", 10,
+    std::bind(&MPCPathTrackerCpp::steeringAngleCb, this, std::placeholders::_1));
+
   auto period = std::chrono::duration<double>(1.0 / std::max(control_rate_hz_, 1.0));
   timer_ = this->create_wall_timer(
     std::chrono::duration_cast<std::chrono::milliseconds>(period),
@@ -85,6 +90,8 @@ void MPCPathTrackerCpp::odomCb(const nav_msgs::msg::Odometry::SharedPtr msg)
   state_.x = msg->pose.pose.position.x;
   state_.y = msg->pose.pose.position.y;
   state_.yaw = yawFromQuaternion(msg->pose.pose.orientation);
+  const double steer_rad = current_steer_deg_ * 3.14159265358979323846 / 180.0;
+  state_.kappa = std::tan(steer_rad) / std::max(wheelbase_m_, 0.01);
   has_odom_ = true;
 }
 
@@ -111,6 +118,11 @@ void MPCPathTrackerCpp::slopeFactorCb(const std_msgs::msg::Float64::SharedPtr ms
   slope_factor_ = msg->data;
 }
 
+void MPCPathTrackerCpp::steeringAngleCb(const std_msgs::msg::Float64::SharedPtr msg)
+{
+  current_steer_deg_ = msg->data;
+}
+
 double MPCPathTrackerCpp::yawFromQuaternion(const geometry_msgs::msg::Quaternion & q)
 {
   const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
@@ -127,6 +139,7 @@ std::vector<RefPoint> MPCPathTrackerCpp::pathFromMsg(const nav_msgs::msg::Path &
     RefPoint p;
     p.x = ps.pose.position.x;
     p.y = ps.pose.position.y;
+    p.kappa_r = ps.pose.orientation.x;
     out.push_back(p);
   }
 
@@ -187,7 +200,10 @@ void MPCPathTrackerCpp::controlLoop()
   const double speed_mps = std::max(0.1, forward_speed_kmh_ / 3.6);
   const auto out = controller_.computeControl(state_, path_, nearest_idx, speed_mps);
 
-  cmd.linear.x = std::abs(forward_speed_kmh_) * (255.0 / 25.5) * slope_factor_;
+  const double speed_pwm = std::clamp(
+    std::abs(forward_speed_kmh_) * (255.0 / 25.5) * slope_factor_,
+    0.0, 255.0);
+  cmd.linear.x = speed_pwm;
   cmd.angular.z = out.steer_deg;
   cmd_pub_->publish(cmd);
 }

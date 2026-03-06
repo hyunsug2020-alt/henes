@@ -88,6 +88,18 @@ def generate_launch_description():
             'path_topic': '/global_path',
         }],
     )
+    map_to_odom_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='map_to_odom_tf',
+        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
+    )
+    base_footprint_to_base_link_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='base_footprint_to_base_link_tf',
+        arguments=['0', '0', '0', '0', '0', '0', 'base_footprint', 'base_link'],
+    )
 
     stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -133,6 +145,8 @@ def generate_launch_description():
         gps_rtk_quality_topic,
         path_selector,
         path_loader_node,
+        map_to_odom_tf,
+        base_footprint_to_base_link_tf,
         stack,
         gps_rtk_gui_node,
     ])

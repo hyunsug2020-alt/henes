@@ -1,5 +1,6 @@
 #include "jeju_mpc/mpc_path_maker.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <iomanip>
@@ -53,6 +54,7 @@ MpcPathMakerNode::MpcPathMakerNode()
     RCLCPP_ERROR(this->get_logger(), "Cannot open path file: %s", full_path.c_str());
   } else {
     RCLCPP_INFO(this->get_logger(), "Path output: %s", full_path.c_str());
+    path_file_ << "# x\ty\tz\tyaw\tkappa_r\n";
   }
 
   global_path_.header.frame_id = "map";
@@ -182,14 +184,6 @@ void MpcPathMakerNode::recordStep()
     return;
   }
 
-  const double global_x = local_x + origin_x_;
-  const double global_y = local_y + origin_y_;
-
-  if (path_file_.is_open()) {
-    path_file_ << global_x << "\t" << global_y << "\t" << local_z << "\n";
-    path_file_.flush();
-  }
-
   last_local_x_ = local_x;
   last_local_y_ = local_y;
 
@@ -201,6 +195,89 @@ void MpcPathMakerNode::recordStep()
   pose.pose.position.z = local_z;
   pose.pose.orientation = latest_odom_.pose.pose.orientation;
   global_path_.poses.push_back(pose);
+  kappa_r_buf_.push_back(0.0);
+
+  // 3점 이상 쌓이면 yaw, kappa 재계산
+  recomputePathKappa();
+}
+
+double MpcPathMakerNode::compute3ptKappa(
+  double x0, double y0, double x1, double y1, double x2, double y2)
+{
+  const double d1 = std::hypot(x1 - x0, y1 - y0);
+  const double d2 = std::hypot(x2 - x1, y2 - y1);
+  const double cross = (x1 - x0) * (y2 - y1) - (y1 - y0) * (x2 - x1);
+  const double denom = d1 * d2 * (d1 + d2);
+  if (denom < 1e-9) {
+    return 0.0;
+  }
+  return 2.0 * cross / denom;
+}
+
+void MpcPathMakerNode::recomputePathKappa()
+{
+  const int n = static_cast<int>(global_path_.poses.size());
+  if (n < 3) {
+    return;
+  }
+
+  // yaw 재계산 (중앙차분)
+  for (int i = 0; i < n; ++i) {
+    const int prev = std::max(0, i - 1);
+    const int next = std::min(n - 1, i + 1);
+    const double dx = global_path_.poses[next].pose.position.x -
+      global_path_.poses[prev].pose.position.x;
+    const double dy = global_path_.poses[next].pose.position.y -
+      global_path_.poses[prev].pose.position.y;
+    const double yaw = std::atan2(dy, dx);
+    // quaternion으로 저장
+    global_path_.poses[i].pose.orientation.x = kappa_r_buf_[i];  // kappa_r 인코딩
+    global_path_.poses[i].pose.orientation.y = 0.0;
+    global_path_.poses[i].pose.orientation.z = std::sin(yaw * 0.5);
+    global_path_.poses[i].pose.orientation.w = std::cos(yaw * 0.5);
+  }
+
+  // kappa_r 재계산 (3점법) + 이동평균 스무딩
+  for (int i = 0; i < n; ++i) {
+    const int p = std::max(0, i - 1);
+    const int nx = std::min(n - 1, i + 1);
+    kappa_r_buf_[i] = compute3ptKappa(
+      global_path_.poses[p].pose.position.x,
+      global_path_.poses[p].pose.position.y,
+      global_path_.poses[i].pose.position.x,
+      global_path_.poses[i].pose.position.y,
+      global_path_.poses[nx].pose.position.x,
+      global_path_.poses[nx].pose.position.y);
+  }
+
+  // 이동평균 (window=3) 노이즈 제거
+  const std::vector<double> raw = kappa_r_buf_;
+  for (int i = 1; i < n - 1; ++i) {
+    kappa_r_buf_[i] = (raw[i - 1] + raw[i] + raw[i + 1]) / 3.0;
+  }
+  for (int i = 0; i < n; ++i) {
+    global_path_.poses[i].pose.orientation.x = kappa_r_buf_[i];
+  }
+
+  // 파일 전체 재기록
+  if (path_file_.is_open()) {
+    path_file_.clear();
+    path_file_.seekp(0, std::ios::beg);
+    path_file_ << "# x\ty\tz\tyaw\tkappa_r\n";
+    for (int i = 0; i < n; ++i) {
+      const auto & pos = global_path_.poses[i].pose.position;
+      const double gz = global_path_.poses[i].pose.orientation.z;
+      const double gw = global_path_.poses[i].pose.orientation.w;
+      const double yaw = 2.0 * std::atan2(gz, gw);
+      path_file_ << std::fixed << std::setprecision(6) <<
+        (pos.x + origin_x_) << "\t" <<
+        (pos.y + origin_y_) << "\t" <<
+        pos.z << "\t" <<
+        yaw << "\t" <<
+        kappa_r_buf_[i] << "\n";
+    }
+    path_file_.flush();
+  }
 }
 
 }  // namespace jeju_mpc
@@ -213,4 +290,3 @@ int main(int argc, char ** argv)
   rclcpp::shutdown();
   return 0;
 }
-

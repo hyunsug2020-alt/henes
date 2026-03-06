@@ -28,6 +28,9 @@ private:
   void gpsVelCb(const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg);
   void publishPath();
   void recordStep();
+  void recomputePathKappa();
+  static double compute3ptKappa(
+    double x0, double y0, double x1, double y1, double x2, double y2);
 
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -54,9 +57,9 @@ private:
   int quality_counter_ {0};
   int history_size_ {5};
   std::vector<std::pair<double, double>> history_;
+  std::vector<double> kappa_r_buf_;
 
   std::ofstream path_file_;
 };
 
 }  // namespace jeju_mpc
-

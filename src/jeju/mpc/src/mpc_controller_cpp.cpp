@@ -5,6 +5,7 @@
 #include <limits>
 #include <vector>
 
+#include <Eigen/Sparse>
 #include <osqp.h>
 
 namespace jeju_mpc
@@ -42,28 +43,55 @@ double MPCControllerCpp::evaluateCandidate(
   double speed_mps,
   double curvature) const
 {
-  VehicleState pred = state;
+  FrenetState fs = cartesianToFrenet(state, path, nearest_idx);
   double cost = 0.0;
 
   for (int k = 0; k < params_.prediction_horizon; ++k) {
-    pred.x += speed_mps * std::cos(pred.yaw) * params_.dt;
-    pred.y += speed_mps * std::sin(pred.yaw) * params_.dt;
-    pred.yaw = normalizeAngle(pred.yaw + speed_mps * curvature * params_.dt);
+    const int ref_idx = std::min(nearest_idx + k + 1, static_cast<int>(path.size()) - 1);
+    const double kappa_r_next = path[ref_idx].kappa_r;
 
-    const int ref_idx = std::min(nearest_idx + k, static_cast<int>(path.size()) - 1);
-    const auto & ref = path[ref_idx];
+    fs = propagateFrenet(fs, curvature, speed_mps, kappa_r_next);
 
-    const double ex = pred.x - ref.x;
-    const double ey = pred.y - ref.y;
-    const double cte = std::sqrt(ex * ex + ey * ey);
-    const double heading_err = normalizeAngle(pred.yaw - ref.yaw);
-
-    cost += params_.w_d * cte * cte;
-    cost += params_.w_theta * heading_err * heading_err;
-    cost += params_.w_kappa * curvature * curvature;
+    cost += params_.w_d * fs.dr * fs.dr;
+    cost += params_.w_theta * fs.dtheta * fs.dtheta;
+    cost += params_.w_kappa * (fs.kappa - fs.kappa_r) * (fs.kappa - fs.kappa_r);
+    cost += params_.w_u * curvature * curvature;
   }
 
   return cost;
+}
+
+FrenetState MPCControllerCpp::cartesianToFrenet(
+  const VehicleState & state,
+  const std::vector<RefPoint> & path,
+  int nearest_idx) const
+{
+  const auto & ref = path[nearest_idx];
+  const double dx = state.x - ref.x;
+  const double dy = state.y - ref.y;
+
+  FrenetState fs;
+  fs.dr = -std::sin(ref.yaw) * dx + std::cos(ref.yaw) * dy;
+  fs.dtheta = normalizeAngle(state.yaw - ref.yaw);
+  fs.kappa = state.kappa;
+  fs.theta_r = ref.yaw;
+  fs.kappa_r = ref.kappa_r;
+  return fs;
+}
+
+FrenetState MPCControllerCpp::propagateFrenet(
+  const FrenetState & fs,
+  double kappa_cmd,
+  double v,
+  double kappa_r_next) const
+{
+  FrenetState next;
+  next.dr = fs.dr + v * std::sin(fs.dtheta) * params_.dt;
+  next.dtheta = normalizeAngle(fs.dtheta + (v * fs.kappa - v * fs.kappa_r) * params_.dt);
+  next.kappa = kappa_cmd;
+  next.theta_r = fs.theta_r;
+  next.kappa_r = kappa_r_next;
+  return next;
 }
 
 MPCControlOutput MPCControllerCpp::computeControl(
@@ -102,135 +130,186 @@ std::optional<MPCControlOutput> MPCControllerCpp::solveWithOsqp(
   int nearest_idx,
   double speed_mps) const
 {
-  (void)speed_mps;
   const int N = params_.prediction_horizon;
-  if (N < 2 || path.size() < 3) {
+  if (N < 2 || static_cast<int>(path.size()) < 3) {
     return std::nullopt;
   }
 
-  const double heading_err = normalizeAngle(state.yaw - path[nearest_idx].yaw);
-  std::vector<double> kappa_ref(N, 0.0);
+  // 초기 Frenet 상태
+  FrenetState fs0 = cartesianToFrenet(state, path, nearest_idx);
+
+  // 상태 차원: [dr, dtheta, kappa] = 3
+  // 입력 차원: [kappa_cmd] = 1
+  const int nx = 3;
+  const int nu = 1;
+
+  // 예측 행렬 구성 (LTV: 매 스텝 v, kappa_r이 달라질 수 있음)
+  // X = [x0; x1; ... xN], U = [u0; u1; ... u_{N-1}]
+  // xi+1 = Ai*xi + Bi*ui + fi
+  Eigen::MatrixXd A_batch = Eigen::MatrixXd::Zero(nx * N, nx);
+  Eigen::MatrixXd B_batch = Eigen::MatrixXd::Zero(nx * N, nu * N);
+  Eigen::VectorXd f_batch = Eigen::VectorXd::Zero(nx * N);
+
+  const double dt = params_.dt;
+  FrenetState fs = fs0;
 
   for (int k = 0; k < N; ++k) {
-    const int idx = std::min(nearest_idx + k, static_cast<int>(path.size()) - 2);
-    const int next = std::min(idx + 1, static_cast<int>(path.size()) - 1);
-    const double dyaw = normalizeAngle(path[next].yaw - path[idx].yaw);
-    const double ds = std::max(0.05, std::hypot(path[next].x - path[idx].x, path[next].y - path[idx].y));
-    double kref = dyaw / ds;
-    if (k == 0) {
-      // Initial heading error correction for single-vehicle tracking.
-      kref -= params_.w_d * heading_err / std::max(params_.wheelbase_m, 0.2);
+    const int ref_idx = std::min(nearest_idx + k, static_cast<int>(path.size()) - 1);
+    const double v = speed_mps;
+    const double kappa_r = path[ref_idx].kappa_r;
+
+    // Ak = d(f)/d(x)
+    Eigen::MatrixXd Ak = Eigen::MatrixXd::Identity(nx, nx);
+    Ak(0, 1) = v * std::cos(fs.dtheta) * dt;  // d(dr)/d(dtheta)
+    Ak(1, 2) = v * dt;                        // d(dtheta)/d(kappa)
+
+    // Bk = d(f)/d(u)
+    Eigen::MatrixXd Bk = Eigen::MatrixXd::Zero(nx, nu);
+    Bk(2, 0) = 1.0;  // kappa = kappa_cmd 직접 대입
+
+    // fk = 비선형 나머지 (affine term)
+    Eigen::VectorXd fk = Eigen::VectorXd::Zero(nx);
+    fk(0) = v * std::sin(fs.dtheta) * dt - Ak(0, 1) * fs.dtheta;
+    fk(1) = -v * kappa_r * dt;
+
+    // A_batch 누적
+    Eigen::MatrixXd Ak_power = Eigen::MatrixXd::Identity(nx, nx);
+    for (int j = 0; j <= k; ++j) {
+      if (j == k) {
+        A_batch.block(k * nx, 0, nx, nx) = Ak_power;
+      }
+      Ak_power = Ak * Ak_power;
     }
-    kappa_ref[k] = std::clamp(kref, params_.kappa_min, params_.kappa_max);
+
+    // B_batch
+    B_batch.block(k * nx, k * nu, nx, nu) = Bk;
+    for (int j = k + 1; j < N; ++j) {
+      B_batch.block(j * nx, k * nu, nx, nu) = Ak * B_batch.block((j - 1) * nx, k * nu, nx, nu);
+    }
+
+    f_batch.segment(k * nx, nx) = fk;
+
+    // 다음 스텝 예측 (중앙값 kappa 사용)
+    fs = propagateFrenet(fs, 0.0, v, kappa_r);
   }
 
-  const c_int n = static_cast<c_int>(N);
-  const c_int m = static_cast<c_int>(N);
-
-  auto * P = csc_spalloc(n, n, 3 * n - 2, 1, 0);
-  auto * A = csc_spalloc(m, n, n, 1, 0);
-  if (P == nullptr || A == nullptr) {
-    if (P != nullptr) {
-      csc_spfree(P);
-    }
-    if (A != nullptr) {
-      csc_spfree(A);
-    }
-    return std::nullopt;
+  // 비용함수 가중치 행렬
+  Eigen::MatrixXd Q = Eigen::MatrixXd::Zero(nx * N, nx * N);
+  Eigen::MatrixXd R = Eigen::MatrixXd::Zero(nu * N, nu * N);
+  for (int k = 0; k < N; ++k) {
+    Q(k * nx + 0, k * nx + 0) = params_.w_d;
+    Q(k * nx + 1, k * nx + 1) = params_.w_theta;
+    Q(k * nx + 2, k * nx + 2) = params_.w_kappa;
+    R(k * nu, k * nu) = params_.w_u;
   }
 
-  c_int nnzP = 0;
-  c_int nnzA = 0;
-  P->p[0] = 0;
-  A->p[0] = 0;
+  // x0 벡터
+  Eigen::VectorXd x0(nx);
+  x0 << fs0.dr, fs0.dtheta, fs0.kappa;
 
-  const double w_track = std::max(1e-6, params_.w_theta + params_.w_kappa);
-  const double w_smooth = std::max(1e-6, params_.w_u);
+  // 예측: X = A_batch*x0 + B_batch*U + F
+  // 비용: min 0.5*U^T*H*U + g^T*U
+  Eigen::MatrixXd H = B_batch.transpose() * Q * B_batch + R;
+  Eigen::VectorXd Ax0f = A_batch * x0 + f_batch;
+  Eigen::VectorXd g = B_batch.transpose() * Q * Ax0f;
 
-  for (c_int j = 0; j < n; ++j) {
-    double diag = 2.0 * w_track;
-    if (j > 0) {
-      diag += 2.0 * w_smooth;
-    }
-    if (j < n - 1) {
-      diag += 2.0 * w_smooth;
-    }
+  // H 대칭화
+  H = 0.5 * (H + H.transpose());
 
-    P->i[nnzP] = j;
-    P->x[nnzP] = static_cast<c_float>(diag);
-    ++nnzP;
+  // OSQP 입력 변환
+  const int n_var = nu * N;
+  const int n_con = nu * N;
 
-    if (j < n - 1) {
-      P->i[nnzP] = j + 1;
-      P->x[nnzP] = static_cast<c_float>(-2.0 * w_smooth);
-      ++nnzP;
-    }
+  // 입력 제약: kappa_min <= u <= kappa_max
+  Eigen::SparseMatrix<double> P_sp = H.sparseView();
+  Eigen::SparseMatrix<double> A_sp(n_con, n_var);
+  A_sp.setIdentity();
 
-    P->p[j + 1] = nnzP;
+  std::vector<c_float> P_data_v;
+  std::vector<c_float> A_data_v;
+  std::vector<c_float> q_data_v;
+  std::vector<c_float> l_data_v;
+  std::vector<c_float> u_data_v;
+  std::vector<c_int> P_idx_v;
+  std::vector<c_int> P_ptr_v;
+  std::vector<c_int> A_idx_v;
+  std::vector<c_int> A_ptr_v;
 
-    A->i[nnzA] = j;
-    A->x[nnzA] = 1.0;
-    ++nnzA;
-    A->p[j + 1] = nnzA;
+  P_sp.makeCompressed();
+  for (int i = 0; i < P_sp.nonZeros(); ++i) {
+    P_data_v.push_back(static_cast<c_float>(*(P_sp.valuePtr() + i)));
+    P_idx_v.push_back(static_cast<c_int>(*(P_sp.innerIndexPtr() + i)));
+  }
+  for (int i = 0; i <= n_var; ++i) {
+    P_ptr_v.push_back(static_cast<c_int>(*(P_sp.outerIndexPtr() + i)));
   }
 
-  P->nzmax = nnzP;
-  A->nzmax = nnzA;
-
-  std::vector<c_float> q(n, 0.0);
-  std::vector<c_float> l(m, static_cast<c_float>(params_.kappa_min));
-  std::vector<c_float> u(m, static_cast<c_float>(params_.kappa_max));
-  for (int i = 0; i < N; ++i) {
-    q[i] = static_cast<c_float>(-2.0 * w_track * kappa_ref[i]);
+  A_sp.makeCompressed();
+  for (int i = 0; i < A_sp.nonZeros(); ++i) {
+    A_data_v.push_back(static_cast<c_float>(*(A_sp.valuePtr() + i)));
+    A_idx_v.push_back(static_cast<c_int>(*(A_sp.innerIndexPtr() + i)));
+  }
+  for (int i = 0; i <= n_var; ++i) {
+    A_ptr_v.push_back(static_cast<c_int>(*(A_sp.outerIndexPtr() + i)));
   }
 
-  OSQPData data;
-  data.n = n;
-  data.m = m;
-  data.P = P;
-  data.A = A;
-  data.q = q.data();
-  data.l = l.data();
-  data.u = u.data();
+  for (int i = 0; i < n_var; ++i) {
+    q_data_v.push_back(static_cast<c_float>(g(i)));
+    l_data_v.push_back(static_cast<c_float>(params_.kappa_min));
+    u_data_v.push_back(static_cast<c_float>(params_.kappa_max));
+  }
 
-  OSQPSettings settings;
+  OSQPData data {};
+  data.n = n_var;
+  data.m = n_con;
+  data.P = csc_matrix(
+    n_var, n_var, P_sp.nonZeros(),
+    P_data_v.data(), P_idx_v.data(), P_ptr_v.data());
+  data.q = q_data_v.data();
+  data.A = csc_matrix(
+    n_con, n_var, A_sp.nonZeros(),
+    A_data_v.data(), A_idx_v.data(), A_ptr_v.data());
+  data.l = l_data_v.data();
+  data.u = u_data_v.data();
+
+  OSQPSettings settings {};
   osqp_set_default_settings(&settings);
-  settings.verbose = false;
-  settings.max_iter = 2000;
+  settings.verbose = 0;
+  settings.polish = 1;
+  settings.max_iter = 1000;
   settings.eps_abs = 1e-4;
   settings.eps_rel = 1e-4;
-  settings.polish = false;
 
   OSQPWorkspace * work = nullptr;
-  if (osqp_setup(&work, &data, &settings) != 0 || work == nullptr) {
-    csc_spfree(P);
-    csc_spfree(A);
+  if (osqp_setup(&work, &data, &settings) != 0) {
+    c_free(data.P);
+    c_free(data.A);
     return std::nullopt;
   }
+  osqp_solve(work);
 
-  if (osqp_solve(work) != 0 || work->info == nullptr || work->solution == nullptr) {
-    osqp_cleanup(work);
-    csc_spfree(P);
-    csc_spfree(A);
-    return std::nullopt;
-  }
-
-  if (!(work->info->status_val == OSQP_SOLVED || work->info->status_val == OSQP_SOLVED_INACCURATE)) {
-    osqp_cleanup(work);
-    csc_spfree(P);
-    csc_spfree(A);
-    return std::nullopt;
-  }
+  const bool ok = (work->info->status_val == OSQP_SOLVED ||
+    work->info->status_val == OSQP_SOLVED_INACCURATE);
 
   MPCControlOutput out;
-  out.curvature = static_cast<double>(work->solution->x[0]);
-  const double steer_rad = std::atan(params_.wheelbase_m * out.curvature);
-  out.steer_deg = std::clamp(steer_rad * 180.0 / kPi, -params_.max_steer_deg, params_.max_steer_deg);
-  out.cost = static_cast<double>(work->info->obj_val);
+  if (ok) {
+    out.curvature = std::clamp(
+      static_cast<double>(work->solution->x[0]),
+      params_.kappa_min, params_.kappa_max);
+    const double steer_rad = std::atan(params_.wheelbase_m * out.curvature);
+    out.steer_deg = std::clamp(
+      steer_rad * 180.0 / kPi,
+      -params_.max_steer_deg, params_.max_steer_deg);
+    out.cost = work->info->obj_val;
+  }
 
   osqp_cleanup(work);
-  csc_spfree(P);
-  csc_spfree(A);
+  c_free(data.P);
+  c_free(data.A);
+
+  if (!ok) {
+    return std::nullopt;
+  }
   return out;
 }
 
