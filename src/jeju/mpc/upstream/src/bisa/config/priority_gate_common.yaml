@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# Priority collision gate common defaults
+# ---------------------------------------------------------------------------
+# Role:
+# - Base parameters shared by all CAV gate nodes.
+# - Loaded first by problem3_cpp_launch.py, then overridden by:
+#   1) priority_gate_cavXX.yaml (per-vehicle)
+#   2) inline launch parameters (highest priority)
+# Notes:
+# - Keep this file as safe/common defaults.
+# - Use per-CAV files for vehicle-specific distance tuning.
+# ---------------------------------------------------------------------------
+/**:
+  ros__parameters:
+    # TTC branch master switch. In current launch this is overridden to false
+    # to use reservation/geometric-first logic with TTC as fallback disabled.
+    ttc_mode_enabled: true
+
+    # TTC conflict timing thresholds (seconds/meters/indices).
+    ttc_threshold_sec: 3.0
+    ttc_tie_margin_sec: 0.15
+    ttc_overlap_distance: 0.35
+    ttc_conflict_distance: 0.35
+    ttc_max_hit_index: 24
+
+    # Physical guard distances for TTC runtime protection.
+    ttc_physical_guard_distance: 0.80
+    ttc_emergency_stop_distance: 0.45
+    ttc_absolute_emergency_stop_distance: 0.40
+
+    # Startup hold until peer data is ready.
+    ttc_startup_hold_enabled: true
+    ttc_startup_hold_sec: 1.0
+
+    # Speed assumptions/scale in TTC mode.
+    ttc_min_speed: 0.05
+    ttc_default_other_speed: 0.35
+    yield_speed_ratio: 0.55
+    pass_speed_boost: 1.15
+    max_velocity_cap: 0.72
+
+    # Geometric overlap window for proactive pre-entry stop.
+    overlap_distance: 0.82
+    release_overlap_distance: 0.90
+    stop_lookahead_index: 22
+    hard_stop_lookahead_index: 30
+
+    # Near-pose and occupied-zone safety stops.
+    near_pose_stop_distance: 0.62
+    near_pose_release_distance: 0.76
+    occupied_pose_stop_distance: 0.90
+    geometric_stop_pose_distance: 1.60
+
+    # Same-priority arbitration (ETA tie-break) participant set and distances.
+    same_priority_ids: [1, 2, 3, 4]
+    same_priority_stop_distance: 1.20
+    same_priority_release_distance: 1.40
+
+    # Absolute hard-stop distance when very close (regardless of arbitration).
+    emergency_hard_stop_distance: 0.38

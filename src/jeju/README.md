@@ -83,6 +83,10 @@ Arduino IDE에서:
 # Upload
 ```
 
+중요:
+- `serial_bridge_node.py`는 JSON Serial 펌웨어 전용입니다.
+- `/home/coss/henes_arduino/henes_micro_ros_core/henes_micro_ros_core.ino`(micro-ROS 펌웨어)를 업로드하면 현재 제어 경로와 프로토콜이 맞지 않아 구동되지 않습니다.
+
 ### 3. 시리얼 포트 권한 설정
 
 ```bash
@@ -118,7 +122,10 @@ ros2 topic echo /joy
 
 ```bash
 source ~/henes_ws_ros2/install/setup.bash
-ros2 launch jeju joy_control.launch.py
+ros2 launch jeju joy.launch.py
+
+# 버튼 매핑이 다를 때(예: R1/L1 반대로 인식)
+ros2 launch jeju joy.launch.py manual_button_idx:=4 auto_button_idx:=5
 
 # 권장 고정 alias
 #   GPS:      /dev/henes_gps
@@ -128,6 +135,9 @@ ros2 launch jeju joy_control.launch.py
 ros2 launch jeju henes_full_stack.launch.py \
   gps_device:=/dev/henes_gps \
   imu_device:=/dev/henes_imu
+
+# ROS1의 henes_car_control_odom.launch 대응
+ros2 launch jeju henes_car_control_odom.launch.py
 ```
 
 ### 2. 개별 노드 실행
@@ -137,10 +147,10 @@ ros2 launch jeju henes_full_stack.launch.py \
 ros2 run joy joy_node
 
 # 터미널 2: Teleop 노드
-ros2 run jeju teleop_node
+ros2 run jeju teleop_node.py
 
 # 터미널 3: Serial Bridge 노드
-ros2 run jeju serial_bridge_node
+ros2 run jeju serial_bridge_node.py
 ```
 
 ### 3. 파라미터 변경
@@ -164,12 +174,16 @@ ros2 run jeju serial_bridge_node.py --ros-args -p port:=/dev/henes_arduino
 | Triangle (△) | 최대 속도 +10 |
 | X (✕) | 최대 속도 -10 |
 
+기본 파라미터는 `manual_button_idx:=4`, `auto_button_idx:=5` 입니다.
+컨트롤러 드라이버마다 인덱스가 다를 수 있으므로 `/joy`를 보고 조정하세요.
+
 ## 토픽 구조
 
 ## 제어 경로 정리
 
 - 현재 모터/조향 제어의 단일 경로는 `control/serial_bridge_node.py` 입니다.
 - `cmd_vel` 명령은 `serial_bridge_node`를 통해 제어보드로 전달됩니다.
+- ROS1 호환을 위해 `/twist_vel`도 함께 지원합니다.
 - 기존 C++ 제어 노드는 더 이상 사용하지 않으며 제거되었습니다.
 
 ### Published Topics (by Serial Bridge)
@@ -179,9 +193,11 @@ ros2 run jeju serial_bridge_node.py --ros-args -p port:=/dev/henes_arduino
 - `/steering_error` (std_msgs/Float64) - PID 제어 오차
 - `/raw_sensor` (std_msgs/Float64) - 조향 센서 원본 값
 - `/pwm_output` (std_msgs/Float64) - 조향 모터 PWM 출력
+- `/arduino_heartbeat` (std_msgs/Int32) - 아두이노 heartbeat 카운터
 
 ### Subscribed Topics (by Serial Bridge)
 - `/cmd_vel` (geometry_msgs/Twist) - 속도 및 조향 명령
+- `/twist_vel` (geometry_msgs/Twist) - ROS1 호환 속도/조향 명령
 - `/pid/kp` (std_msgs/Float64) - PID Kp 값
 - `/pid/ki` (std_msgs/Float64) - PID Ki 값
 - `/pid/kd` (std_msgs/Float64) - PID Kd 값
@@ -192,6 +208,7 @@ ros2 run jeju serial_bridge_node.py --ros-args -p port:=/dev/henes_arduino
 
 ### Published Topics (by Teleop)
 - `/cmd_vel` (geometry_msgs/Twist) - 조이스틱 제어 명령
+- `/twist_vel` (geometry_msgs/Twist) - ROS1 호환 조이스틱 제어 명령
 - `/teleop_mode` (std_msgs/Bool) - 텔레옵 모드 상태
 
 ## 트러블슈팅

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import math
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
@@ -22,22 +23,29 @@ class PathMakerNode(Node):
         self.declare_parameter('output_dir', str(Path.home() / 'henes_ws_ros2' / 'paths'))
         self.declare_parameter('path_name', 'recorded_path')
         self.declare_parameter('timestamped_filename', True)
+        self.declare_parameter('use_numbered_filename', True)
         self.declare_parameter('use_filter', True)
         self.declare_parameter('odom_topic', '/odometry/filtered')
         self.declare_parameter('publish_rate_hz', 1.0)
         self.declare_parameter('record_rate_hz', 30.0)
         self.declare_parameter('min_record_distance_default', 0.2)
+        self.declare_parameter('require_speed_for_record', False)
 
         output_dir = Path(str(self.get_parameter('output_dir').value)).expanduser()
         path_name = str(self.get_parameter('path_name').value)
         timestamped_filename = bool(self.get_parameter('timestamped_filename').value)
+        use_numbered_filename = bool(self.get_parameter('use_numbered_filename').value)
         self.use_filter = bool(self.get_parameter('use_filter').value)
         self.min_record_distance_default = float(self.get_parameter('min_record_distance_default').value)
         self.min_record_distance = self.min_record_distance_default
+        self.require_speed_for_record = bool(self.get_parameter('require_speed_for_record').value)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         suffix = '_filtered' if self.use_filter else '_original'
-        if timestamped_filename:
+        if use_numbered_filename:
+            next_idx = self._next_path_index(output_dir)
+            self.output_file = output_dir / f'{next_idx}{suffix}.txt'
+        elif timestamped_filename:
             ts = datetime.now().strftime('%Y%m%d_%H%M%S')
             self.output_file = output_dir / f'{path_name}_{ts}{suffix}.txt'
         else:
@@ -76,6 +84,17 @@ class PathMakerNode(Node):
         self.create_timer(1.0 / max(rec_hz, 1.0), self.record_step)
 
         self.get_logger().info(f'Path maker started. Odom: {odom_topic} | Output: {self.output_file}')
+
+    def _next_path_index(self, output_dir: Path) -> int:
+        max_idx = 0
+        for p in output_dir.glob('*.txt'):
+            m = re.match(r'^(\d+)(?:_.*)?\.txt$', p.name)
+            if not m:
+                continue
+            idx = int(m.group(1))
+            if idx > max_idx:
+                max_idx = idx
+        return max_idx + 1
 
     def origin_cb(self, msg: Point) -> None:
         self.origin_x = float(msg.x)
@@ -142,10 +161,11 @@ class PathMakerNode(Node):
         if self.quality_counter < required_count:
             return
 
-        speed = math.hypot(self.vel_from_gps[0], self.vel_from_gps[1])
-        min_speed = 0.3 if self.gps_quality > 0.8 else 0.5
-        if speed < min_speed:
-            return
+        if self.require_speed_for_record:
+            speed = math.hypot(self.vel_from_gps[0], self.vel_from_gps[1])
+            min_speed = 0.3 if self.gps_quality > 0.8 else 0.5
+            if speed < min_speed:
+                return
 
         global_x = local_x + self.origin_x
         global_y = local_y + self.origin_y

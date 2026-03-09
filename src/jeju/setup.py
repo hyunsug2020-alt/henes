@@ -33,6 +33,7 @@ setup(
             'wheel_odom_node = sensing.wheel_odom_node:main',
             'path_follower_node = navigation.path_follower_node:main',
             'path_maker_node = navigation.path_maker_node:main',
+            'path_file_loader_node = navigation.path_file_loader_node:main',
         ],
     },
 )

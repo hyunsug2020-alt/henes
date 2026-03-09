@@ -1,0 +1,14 @@
+# Per-CAV gate tuning (CAV01)
+# Role:
+# - Optional overrides on top of priority_gate_common.yaml.
+# - Use for vehicle-specific close-range behavior.
+/**:
+  ros__parameters:
+    # Immediate pose stop/release around near-term overlap zone.
+    immediate_pose_stop_distance: 0.78
+    immediate_pose_release_distance: 0.92
+    immediate_overlap_distance: 0.55
+
+    # Emergency stop/release around very close pose conflict.
+    emergency_pose_stop_distance: 0.62
+    emergency_pose_release_distance: 0.76

@@ -8,8 +8,8 @@
 #define MOTOR3_PWM 5
 #define MOTOR3_DIR 24
 #define Steering_Sensor A8
-#define LEFT_STEER_ANGLE  -60
-#define RIGHT_STEER_ANGLE  60
+#define LEFT_STEER_ANGLE  -55
+#define RIGHT_STEER_ANGLE  55
 #define ENC1_ADD 3
 #define ENC2_ADD 2
 #define MIN_MOTOR_PWM 30
