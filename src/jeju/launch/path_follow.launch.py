@@ -45,10 +45,10 @@ def _prompt_path_id(context):
 
 def generate_launch_description():
     enable_serial = DeclareLaunchArgument('enable_serial', default_value='true')
-    enable_gps = DeclareLaunchArgument('enable_gps', default_value='true')
+    enable_gps = DeclareLaunchArgument('enable_gps', default_value='false')
     enable_status = DeclareLaunchArgument('enable_status', default_value='true')
     enable_imu = DeclareLaunchArgument('enable_imu', default_value='true')
-    enable_ntrip = DeclareLaunchArgument('enable_ntrip', default_value='true')
+    enable_ntrip = DeclareLaunchArgument('enable_ntrip', default_value='false')
     enable_lidar = DeclareLaunchArgument('enable_lidar', default_value='false')
     enable_mpc_follower = DeclareLaunchArgument('enable_mpc_follower', default_value='true')
     arduino_port = DeclareLaunchArgument('arduino_port', default_value='/dev/henes_arduino')
@@ -61,7 +61,7 @@ def generate_launch_description():
         default_value='',
         description='Path file number (e.g. 1 for 1_filtered.txt). Empty => prompt on launch.',
     )
-    enable_gps_rtk_gui = DeclareLaunchArgument('enable_gps_rtk_gui', default_value='true')
+    enable_gps_rtk_gui = DeclareLaunchArgument('enable_gps_rtk_gui', default_value='false')
     gps_rtk_fix_topic = DeclareLaunchArgument('gps_rtk_fix_topic', default_value='/fix')
     gps_rtk_quality_topic = DeclareLaunchArgument('gps_rtk_quality_topic', default_value='/gps/quality')
 

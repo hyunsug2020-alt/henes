@@ -13,18 +13,59 @@ serial_bridge_node:
     timeout: 1.0
     rx_watchdog_sec: 0.0
 
+status_info_node:
+  ros__parameters:
+    imu_topic: /handsfree/imu
+    gps_fix_topic: /fix
+    gps_vel_topic: /ublox_gps/fix_velocity
+    gps_heading_speed_threshold_mps: 0.7
+    gps_heading_speed_hysteresis_mps: 0.2
+    gps_heading_alpha: 0.35
+    imu_bias_alpha: 0.1
+    yaw_offset_deg: 0.0
+
 mpc_path_follower_node:
   ros__parameters:
+    # ── 공통 ─────────────────────────────────────────
     wheelbase_m: 1.04
     forward_speed_kmh: 3.0
     prediction_horizon: 15
     dt: 0.1
-    w_d: 1.0
-    w_theta: 0.5
-    w_kappa: 0.05
-    w_u: 0.2
     goal_tolerance_m: 1.0
     max_steer_deg: 55.0
     kappa_min: -0.9
     kappa_max: 0.9
     kappa_samples: 31
+
+    # ── Frenet fallback 가중치 ────────────────────────
+    w_d: 1.0
+    w_theta: 0.5
+    w_kappa: 0.05
+    w_u: 0.2
+
+    # ── DBM 모드 ──────────────────────────────────────
+    use_dbm: true
+
+    # ── 9-state DBM 물리 파라미터 ─────────────────────
+    mass_kg: 150.0
+    inertia_kgm2: 120.0
+    lf_m: 0.52
+    lr_m: 0.52
+    Ca_N_rad: 25000.0
+    Cx_N: 30000.0
+    Jw_kgm2: 0.05
+    r_w_m: 0.08
+    v_delta_max: 0.5
+    v_min_mps: 0.3
+    mu: 0.8
+
+    # ── 9-state DBM 비용 가중치 ───────────────────────
+    w_xy: 2.0
+    w_psi: 1.0
+    w_vx: 0.5
+    w_vy: 0.3
+    w_omega: 0.3
+    w_delta_c: 0.1
+    w_wheel: 0.01
+    w_u_delta: 0.2
+    w_u_torque: 0.00001

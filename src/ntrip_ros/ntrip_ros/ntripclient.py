@@ -1,14 +1,34 @@
 #!/usr/bin/env python3
 
+from base64 import b64encode
+import math
+import select
+import socket
+from threading import Lock, Thread
+import time
+
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from rtcm_msgs.msg import Message
-from std_msgs.msg import Header
-from base64 import b64encode
-from threading import Thread
-import time
-import socket
-import select
+from sensor_msgs.msg import NavSatFix, NavSatStatus
+from std_msgs.msg import Header, String
+
+
+def _nmea_checksum(payload: str) -> str:
+    checksum = 0
+    for ch in payload.encode('ascii', errors='ignore'):
+        checksum ^= ch
+    return f'{checksum:02X}'
+
+
+def _format_nmea_coordinate(value: float, is_latitude: bool) -> str:
+    abs_value = abs(value)
+    degrees = int(abs_value)
+    minutes = (abs_value - degrees) * 60.0
+    if is_latitude:
+        return f'{degrees:02d}{minutes:07.4f}'
+    return f'{degrees:03d}{minutes:07.4f}'
 
 class NTRIPConnect(Thread):
     def __init__(self, node):
@@ -22,12 +42,26 @@ class NTRIPConnect(Thread):
     def run(self):
         while not self.stop and rclpy.ok():
             try:
+                if self.node.require_live_gga and not self.node.has_live_gga():
+                    self.node.log_waiting_for_live_gga()
+                    time.sleep(1.0)
+                    continue
+
                 # 파라미터 값 가져오기
                 ntrip_server = self.node.ntrip_server
                 ntrip_stream = self.node.ntrip_stream
                 ntrip_user = self.node.ntrip_user
                 ntrip_pass = self.node.ntrip_pass
-                nmea_gga = self.node.nmea_gga
+                nmea_gga = self.node.get_nmea_gga()
+
+                if not ntrip_server or not ntrip_stream:
+                    self.node.get_logger().error("NTRIP server/stream is empty")
+                    time.sleep(1.0)
+                    continue
+                if not nmea_gga:
+                    self.node.get_logger().warn("No usable NMEA GGA is available yet")
+                    time.sleep(1.0)
+                    continue
 
                 server_parts = ntrip_server.split(':')
                 server = server_parts[0]
@@ -61,7 +95,7 @@ class NTRIPConnect(Thread):
                     f"Connection: close\r\n"
                     f"Authorization: Basic {auth}\r\n"
                     f"\r\n"
-                    f"{nmea_gga}"
+                    f"{nmea_gga.rstrip()}\r\n"
                 )
                 
                 # 요청 전송
@@ -214,7 +248,11 @@ class NTRIPClient(Node):
         self.declare_parameter('ntrip_user', '')
         self.declare_parameter('ntrip_pass', '')
         self.declare_parameter('ntrip_stream', '')
-        self.declare_parameter('nmea_gga', '$GPGGA,000000.00,0000.000,N,00000.000,E,1,00,1.0,0.0,M,0.0,M,,*00')
+        self.declare_parameter('nmea_gga', '')
+        self.declare_parameter('nmea_gga_topic', '')
+        self.declare_parameter('fix_topic', '/fix')
+        self.declare_parameter('require_live_gga', True)
+        self.declare_parameter('live_gga_timeout_sec', 5.0)
 
         self.rtcm_topic = self.get_parameter('rtcm_topic').value
         self.ntrip_server = self.get_parameter('ntrip_server').value
@@ -222,10 +260,32 @@ class NTRIPClient(Node):
         self.ntrip_pass = self.get_parameter('ntrip_pass').value
         self.ntrip_stream = self.get_parameter('ntrip_stream').value
         self.nmea_gga = self.get_parameter('nmea_gga').value
+        self.nmea_gga_topic = self.get_parameter('nmea_gga_topic').value
+        self.fix_topic = self.get_parameter('fix_topic').value
+        self.require_live_gga = self.get_parameter('require_live_gga').value
+        self.live_gga_timeout_sec = float(self.get_parameter('live_gga_timeout_sec').value)
+
+        self._gga_lock = Lock()
+        self._live_nmea_gga = ''
+        self._live_nmea_gga_time = 0.0
+        self._generated_gga = ''
+        self._generated_gga_time = 0.0
+        self._waiting_for_live_gga_logged = False
 
         self.get_logger().info(f"NTRIP Client initialized with server: {self.ntrip_server}, stream: {self.ntrip_stream}")
         self.get_logger().info(f"Publishing RTCM messages to: {self.rtcm_topic}")
-        self.get_logger().info(f"Using NMEA GGA: {self.nmea_gga}")
+        if self.nmea_gga:
+            self.get_logger().info("Static fallback NMEA GGA is configured")
+        if self.nmea_gga_topic:
+            self.get_logger().info(f"Live NMEA GGA topic: {self.nmea_gga_topic}")
+            self.create_subscription(
+                String, self.nmea_gga_topic, self.nmea_callback, qos_profile_sensor_data)
+        if self.fix_topic:
+            self.get_logger().info(f"NavSatFix topic for dynamic GGA: {self.fix_topic}")
+            self.create_subscription(
+                NavSatFix, self.fix_topic, self.fix_callback, qos_profile_sensor_data)
+        if self.require_live_gga:
+            self.get_logger().info("NTRIP connect will wait for a live GPS-based GGA")
 
         # 퍼블리셔 생성
         self.pub = self.create_publisher(Message, self.rtcm_topic, 100)
@@ -233,6 +293,83 @@ class NTRIPClient(Node):
         # 연결 스레드 시작
         self.connection = NTRIPConnect(self)
         self.connection.start()
+
+    def _is_recent(self, timestamp: float) -> bool:
+        return timestamp > 0.0 and (time.time() - timestamp) <= self.live_gga_timeout_sec
+
+    def has_live_gga(self) -> bool:
+        with self._gga_lock:
+            return self._is_recent(self._live_nmea_gga_time) or self._is_recent(self._generated_gga_time)
+
+    def get_nmea_gga(self) -> str:
+        with self._gga_lock:
+            if self._is_recent(self._live_nmea_gga_time):
+                return self._live_nmea_gga
+            if self._is_recent(self._generated_gga_time):
+                return self._generated_gga
+            return self.nmea_gga
+
+    def log_waiting_for_live_gga(self) -> None:
+        if self._waiting_for_live_gga_logged:
+            return
+        sources = []
+        if self.nmea_gga_topic:
+            sources.append(self.nmea_gga_topic)
+        if self.fix_topic:
+            sources.append(self.fix_topic)
+        joined = ', '.join(sources) if sources else 'configured GPS topics'
+        self.get_logger().info(f"Waiting for live GGA from {joined} before connecting to NTRIP caster")
+        self._waiting_for_live_gga_logged = True
+
+    def nmea_callback(self, msg: String) -> None:
+        line = msg.data.strip()
+        if not (line.startswith('$GPGGA') or line.startswith('$GNGGA')):
+            return
+        with self._gga_lock:
+            self._live_nmea_gga = line
+            self._live_nmea_gga_time = time.time()
+        self._waiting_for_live_gga_logged = False
+
+    def fix_callback(self, msg: NavSatFix) -> None:
+        gga = self._build_gga_from_fix(msg)
+        if not gga:
+            return
+        with self._gga_lock:
+            self._generated_gga = gga
+            self._generated_gga_time = time.time()
+        self._waiting_for_live_gga_logged = False
+
+    def _build_gga_from_fix(self, msg: NavSatFix) -> str:
+        lat = float(msg.latitude)
+        lon = float(msg.longitude)
+        alt = float(msg.altitude) if math.isfinite(msg.altitude) else 0.0
+
+        if not math.isfinite(lat) or not math.isfinite(lon):
+            return ''
+        if abs(lat) > 90.0 or abs(lon) > 180.0:
+            return ''
+        if abs(lat) < 1e-9 and abs(lon) < 1e-9:
+            return ''
+        if msg.status.status == NavSatStatus.STATUS_NO_FIX:
+            return ''
+
+        if msg.status.status >= NavSatStatus.STATUS_SBAS_FIX:
+            quality = 2
+        else:
+            quality = 1
+
+        utc_now = time.gmtime()
+        utc_time = time.strftime('%H%M%S', utc_now) + '.00'
+        lat_dir = 'N' if lat >= 0.0 else 'S'
+        lon_dir = 'E' if lon >= 0.0 else 'W'
+        lat_field = _format_nmea_coordinate(lat, is_latitude=True)
+        lon_field = _format_nmea_coordinate(lon, is_latitude=False)
+
+        payload = (
+            f'GPGGA,{utc_time},{lat_field},{lat_dir},{lon_field},{lon_dir},'
+            f'{quality},00,1.0,{alt:.1f},M,0.0,M,,'
+        )
+        return f'${payload}*{_nmea_checksum(payload)}'
 
     def stop_connection(self):
         if self.connection is not None:

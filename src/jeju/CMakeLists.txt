@@ -89,6 +89,7 @@ install(PROGRAMS
   control/serial_bridge_node.py
   sensing/status_info_node.py
   sensing/wheel_odom_node.py
+  sensing/dual_gnss_heading_node.py
   navigation/path_follower_node.py
   navigation/path_maker_node.py
   DESTINATION lib/${PROJECT_NAME}

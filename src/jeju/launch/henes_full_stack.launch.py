@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 from launch import LaunchDescription
-import subprocess
 
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
@@ -10,25 +9,6 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-
-
-def _udev_serial_from_device(device_path: str) -> str:
-    if not device_path:
-        return ''
-    out = subprocess.run(
-        ['udevadm', 'info', '-q', 'property', '-n', device_path],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if out.returncode != 0:
-        return ''
-    for line in out.stdout.splitlines():
-        if line.startswith('ID_SERIAL_SHORT='):
-            return line.split('=', 1)[1].strip()
-    return ''
-
-
 def _build_gps_launch(context):
     enabled = LaunchConfiguration('enable_gps').perform(context).strip().lower()
     if enabled not in ('1', 'true', 'yes', 'on'):
@@ -36,11 +16,7 @@ def _build_gps_launch(context):
 
     gps_launch_file = LaunchConfiguration('gps_launch_file').perform(context).strip()
     gps_namespace = LaunchConfiguration('gps_namespace').perform(context).strip()
-    gps_device = LaunchConfiguration('gps_device').perform(context).strip()
     gps_serial = LaunchConfiguration('gps_device_serial').perform(context).strip()
-
-    if not gps_serial:
-        gps_serial = _udev_serial_from_device(gps_device)
 
     launch_args = {
         'namespace': gps_namespace,
@@ -58,7 +34,7 @@ def generate_launch_description():
     enable_joy = DeclareLaunchArgument('enable_joy', default_value='true')
     enable_teleop = DeclareLaunchArgument('enable_teleop', default_value='true')
     enable_serial = DeclareLaunchArgument('enable_serial', default_value='true')
-    enable_gps = DeclareLaunchArgument('enable_gps', default_value='true')
+    enable_gps = DeclareLaunchArgument('enable_gps', default_value='false')
     enable_status = DeclareLaunchArgument('enable_status', default_value='true')
     enable_wheel_odom = DeclareLaunchArgument('enable_wheel_odom', default_value='false')
     enable_path_maker = DeclareLaunchArgument('enable_path_maker', default_value='false')
@@ -67,8 +43,10 @@ def generate_launch_description():
     enable_mpc_follower = DeclareLaunchArgument('enable_mpc_follower', default_value='false')
     enable_imu = DeclareLaunchArgument('enable_imu', default_value='true')
     enable_lidar = DeclareLaunchArgument('enable_lidar', default_value='true')
-    enable_ntrip = DeclareLaunchArgument('enable_ntrip', default_value='true')
+    enable_ntrip = DeclareLaunchArgument('enable_ntrip', default_value='false')
+    arduino_port = DeclareLaunchArgument('arduino_port', default_value='/dev/henes_arduino')
     imu_device = DeclareLaunchArgument('imu_device', default_value='/dev/henes_imu')
+    imu_baudrate = DeclareLaunchArgument('imu_baudrate', default_value='921600')
 
     jeju_params_file = DeclareLaunchArgument(
         'jeju_params_file',
@@ -92,9 +70,9 @@ def generate_launch_description():
     gps_launch_file = DeclareLaunchArgument(
         'gps_launch_file',
         default_value=PathJoinSubstitution([
-            FindPackageShare('ublox_dgnss'),
+            FindPackageShare('jeju'),
             'launch',
-            'ublox_x20p_rover_hpposllh_navsatfix.launch.py',
+            'ublox_rover_hpposllh_navsatfix_rtk.launch.py',
         ])
     )
     gps_namespace = DeclareLaunchArgument('gps_namespace', default_value='')
@@ -102,17 +80,15 @@ def generate_launch_description():
     gps_device_serial = DeclareLaunchArgument(
         'gps_device_serial',
         default_value='',
-        description='ID_SERIAL_SHORT of GPS to lock. Empty means resolve from gps_device.',
+        description='Optional ID_SERIAL_SHORT of GPS to lock. Empty means no serial lock.',
     )
 
     ntrip_server = DeclareLaunchArgument('ntrip_server', default_value='RTS1.ngii.go.kr:2101')
     ntrip_user = DeclareLaunchArgument('ntrip_user', default_value='kjb121000')
     ntrip_pass = DeclareLaunchArgument('ntrip_pass', default_value='ngii')
     ntrip_stream = DeclareLaunchArgument('ntrip_stream', default_value='VRS-RTCM31')
-    ntrip_gga = DeclareLaunchArgument(
-        'ntrip_gga',
-        default_value='$GPGGA,114101.712,3551.578,N,12829.263,E,1,12,1.0,0.0,M,0.0,M,,*61',
-    )
+    ntrip_gga = DeclareLaunchArgument('ntrip_gga', default_value='')
+    ntrip_fix_topic = DeclareLaunchArgument('ntrip_fix_topic', default_value='/fix')
     ntrip_topic = DeclareLaunchArgument('ntrip_rtcm_topic', default_value='/ublox_gps/rtcm')
 
     joy_node = Node(
@@ -141,7 +117,10 @@ def generate_launch_description():
         executable='serial_bridge_node.py',
         name='serial_bridge_node',
         output='screen',
-        parameters=[LaunchConfiguration('jeju_params_file')],
+        parameters=[
+            LaunchConfiguration('jeju_params_file'),
+            {'port': LaunchConfiguration('arduino_port')},
+        ],
         condition=IfCondition(LaunchConfiguration('enable_serial')),
     )
 
@@ -150,6 +129,7 @@ def generate_launch_description():
         executable='status_info_node.py',
         name='status_info_node',
         output='screen',
+        parameters=[LaunchConfiguration('jeju_params_file')],
         condition=IfCondition(LaunchConfiguration('enable_status')),
     )
 
@@ -202,14 +182,14 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_mpc_follower')),
     )
 
-    imu_node = Node(
-        package='my_imu_driver',
-        executable='imu_node',
-        name='imu_node',
-        output='screen',
-        parameters=[{
-            'port': LaunchConfiguration('imu_device'),
-        }],
+    imu_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([FindPackageShare('my_imu_driver'), 'launch', 'imu.launch.py'])
+        ),
+        launch_arguments={
+            'imu_device': LaunchConfiguration('imu_device'),
+            'imu_baudrate': LaunchConfiguration('imu_baudrate'),
+        }.items(),
         condition=IfCondition(LaunchConfiguration('enable_imu')),
     )
 
@@ -237,6 +217,8 @@ def generate_launch_description():
             'ntrip_pass': LaunchConfiguration('ntrip_pass'),
             'ntrip_stream': LaunchConfiguration('ntrip_stream'),
             'nmea_gga': LaunchConfiguration('ntrip_gga'),
+            'fix_topic': LaunchConfiguration('ntrip_fix_topic'),
+            'require_live_gga': True,
         }],
         condition=IfCondition(LaunchConfiguration('enable_ntrip')),
     )
@@ -255,7 +237,9 @@ def generate_launch_description():
         enable_imu,
         enable_lidar,
         enable_ntrip,
+        arduino_port,
         imu_device,
+        imu_baudrate,
         jeju_params_file,
         path_maker_odom_topic,
         mpc_path_maker_odom_topic,
@@ -269,6 +253,7 @@ def generate_launch_description():
         ntrip_pass,
         ntrip_stream,
         ntrip_gga,
+        ntrip_fix_topic,
         ntrip_topic,
         joy_node,
         teleop_node,
@@ -280,7 +265,7 @@ def generate_launch_description():
         mpc_path_maker_node,
         path_follower_node,
         mpc_path_follower_node,
-        imu_node,
+        imu_launch,
         lidar_launch,
         ntrip_node,
     ])

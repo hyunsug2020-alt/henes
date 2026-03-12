@@ -26,9 +26,11 @@ def generate_launch_description():
             'ntrip_stream': 'VRS-RTCM31',
             # 'ntrip_stream': 'VRS-CMRx',
             # 'ntrip_stream': 'RTK-RTCM32',
-            
-            # 공학 4호관 좌표 (VRS 요청용)
-            'nmea_gga': '$GPGGA,114101.712,3551.578,N,12829.263,E,1,12,1.0,0.0,M,0.0,M,,*61',
+
+            # 고정 좌표 대신 실시간 /fix로 GGA를 생성한다.
+            'nmea_gga': '',
+            'fix_topic': '/fix',
+            'require_live_gga': True,
         }]
     )
 
