@@ -5,6 +5,8 @@ import os
 import stat
 import subprocess
 import glob
+import sys
+from pathlib import Path
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetLaunchConfiguration, ExecuteProcess
@@ -14,9 +16,33 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+LAUNCH_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(LAUNCH_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(LAUNCH_REPO_ROOT))
+
+from control.device_config import (
+    default_device_config_path,
+    format_device_resolution,
+    load_device_config,
+    resolve_device_selection,
+)
+
+
+def _resolve_arduino_port(context):
+    config_file = LaunchConfiguration('device_config_file').perform(context).strip() or default_device_config_path()
+    config = load_device_config(config_file)
+    selection = resolve_device_selection(
+        config,
+        'arduino',
+        requested_name=LaunchConfiguration('arduino_name').perform(context).strip(),
+        requested_path=LaunchConfiguration('arduino_port').perform(context).strip(),
+    )
+    print(f'[joy] {format_device_resolution(selection, "arduino device")}')
+    return [SetLaunchConfiguration('resolved_arduino_port', selection['path'])]
+
 
 def _preflight(context):
-    port = LaunchConfiguration('arduino_port').perform(context).strip()
+    port = LaunchConfiguration('resolved_arduino_port').perform(context).strip()
     joy_dev = LaunchConfiguration('joy_dev').perform(context).strip()
     control_mode = LaunchConfiguration('control_mode').perform(context).strip().lower()
     launch_actions = []
@@ -79,7 +105,9 @@ def _preflight(context):
 
 
 def generate_launch_description():
-    arduino_port = DeclareLaunchArgument('arduino_port', default_value='/dev/henes_arduino')
+    device_config_file = DeclareLaunchArgument('device_config_file', default_value=default_device_config_path())
+    arduino_name = DeclareLaunchArgument('arduino_name', default_value='')
+    arduino_port = DeclareLaunchArgument('arduino_port', default_value='')
     joy_dev = DeclareLaunchArgument('joy_dev', default_value='/dev/input/js0')
     control_mode = DeclareLaunchArgument('control_mode', default_value='json')
     micro_ros_agent_baud = DeclareLaunchArgument('micro_ros_agent_baud', default_value='115200')
@@ -89,6 +117,7 @@ def generate_launch_description():
     manual_button_idx = DeclareLaunchArgument('manual_button_idx', default_value='4')
     auto_button_idx = DeclareLaunchArgument('auto_button_idx', default_value='5')
 
+    port_resolver = OpaqueFunction(function=_resolve_arduino_port)
     preflight = OpaqueFunction(function=_preflight)
 
     joy_node = Node(
@@ -140,7 +169,7 @@ def generate_launch_description():
         name='serial_bridge_node',
         output='screen',
         parameters=[{
-            'port': LaunchConfiguration('arduino_port'),
+            'port': LaunchConfiguration('resolved_arduino_port'),
             'baud': 57600,
             'timeout': 0.1,
             # Arduino reset/boot latency can exceed 2.5s right after port open.
@@ -154,7 +183,7 @@ def generate_launch_description():
         cmd=[
             'ros2', 'run', 'micro_ros_agent', 'micro_ros_agent',
             'serial',
-            '--dev', LaunchConfiguration('arduino_port'),
+            '--dev', LaunchConfiguration('resolved_arduino_port'),
             '-b', LaunchConfiguration('micro_ros_agent_baud'),
         ],
         output='screen',
@@ -162,6 +191,8 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        device_config_file,
+        arduino_name,
         arduino_port,
         joy_dev,
         control_mode,
@@ -171,6 +202,7 @@ def generate_launch_description():
         steering_axis,
         manual_button_idx,
         auto_button_idx,
+        port_resolver,
         preflight,
         joy_node,
         teleop_node_json,

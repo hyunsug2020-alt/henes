@@ -129,8 +129,8 @@ class HandsFreeIMU(Node):
         pitch = self.angle_degree[1] * math.pi / 180
         yaw = self.angle_degree[2] * math.pi / 180
 
-        # 쿼터니언 변환
-        q = quaternion_from_euler(roll, -pitch, -yaw) # 좌표계 방향 보정
+        # Field test matched left/right and yaw, but front/rear tilt was inverted.
+        q = quaternion_from_euler(roll, pitch, -yaw)
         imu_msg.orientation.x = q[0]
         imu_msg.orientation.y = q[1]
         imu_msg.orientation.z = q[2]

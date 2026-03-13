@@ -11,7 +11,7 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Imu, NavSatFix
-from std_msgs.msg import Float64
+from std_msgs.msg import Bool, Float64
 
 try:
     from pyproj import Proj  # type: ignore
@@ -42,6 +42,10 @@ class StatusInfoNode(Node):
         self.declare_parameter("gps_heading_alpha", 0.35)
         self.declare_parameter("imu_bias_alpha", 0.1)
         self.declare_parameter("yaw_offset_deg", 0.0)
+        self.declare_parameter("dual_heading_topic", "/dual_f9p/heading")
+        self.declare_parameter("dual_heading_valid_topic", "/dual_f9p/heading_valid")
+        self.declare_parameter("dual_heading_timeout_sec", 0.5)
+        self.declare_parameter("dual_heading_alpha", 1.0)
 
         self.utm_zone = int(self.get_parameter("utm_zone").value)
         self.odom_frame = str(self.get_parameter("odom_frame").value)
@@ -54,11 +58,15 @@ class StatusInfoNode(Node):
         gps_fix_topic = str(self.get_parameter("gps_fix_topic").value)
         gps_vel_topic = str(self.get_parameter("gps_vel_topic").value)
         imu_topic = str(self.get_parameter("imu_topic").value)
+        dual_heading_topic = str(self.get_parameter("dual_heading_topic").value)
+        dual_heading_valid_topic = str(self.get_parameter("dual_heading_valid_topic").value)
         self.gps_heading_speed_threshold = float(self.get_parameter("gps_heading_speed_threshold_mps").value)
         self.gps_heading_speed_hysteresis = float(self.get_parameter("gps_heading_speed_hysteresis_mps").value)
         self.gps_heading_alpha = float(self.get_parameter("gps_heading_alpha").value)
         self.imu_bias_alpha = float(self.get_parameter("imu_bias_alpha").value)
         self.yaw_offset_rad = math.radians(float(self.get_parameter("yaw_offset_deg").value))
+        self.dual_heading_timeout = Duration(seconds=float(self.get_parameter("dual_heading_timeout_sec").value))
+        self.dual_heading_alpha = float(self.get_parameter("dual_heading_alpha").value)
 
         self.origin_set = False
         self.origin_x = 0.0
@@ -76,6 +84,7 @@ class StatusInfoNode(Node):
         self.imu_yaw = 0.0
         self.imu_yaw_rate = 0.0
         self.imu_heading_bias_rad = 0.0
+        self.dual_heading_rad = 0.0
         self.slope_factor = 1.0
         self.prev_slope_factor = 1.0
         self.has_gps = False
@@ -83,10 +92,15 @@ class StatusInfoNode(Node):
         self.has_heading = False
         self.has_gps_course_heading = False
         self.has_imu_heading_bias = False
+        self.has_dual_heading = False
+        self.dual_heading_valid = False
+        self.seen_dual_heading_valid = False
         self.heading_source = "uninitialized"
         self.last_gps_time = self.get_clock().now()
         self.last_gps_vel_time = self.get_clock().now()
         self.last_imu_time = self.get_clock().now()
+        self.last_dual_heading_time = self.get_clock().now()
+        self.last_dual_heading_valid_time = self.get_clock().now()
 
         transient_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -110,6 +124,8 @@ class StatusInfoNode(Node):
         self.create_subscription(NavSatFix, gps_fix_topic, self.gps_cb, sensor_qos)
         self.create_subscription(TwistWithCovarianceStamped, gps_vel_topic, self.gps_vel_cb, sensor_qos)
         self.create_subscription(Imu, imu_topic, self.imu_cb, sensor_qos)
+        self.create_subscription(Float64, dual_heading_topic, self.dual_heading_cb, 10)
+        self.create_subscription(Bool, dual_heading_valid_topic, self.dual_heading_valid_cb, 10)
         self.create_subscription(Twist, "/cmd_vel", self.cmd_cb, 10)
 
         self.create_timer(0.02, self.publish_state)
@@ -122,7 +138,8 @@ class StatusInfoNode(Node):
             self.get_logger().warn("pyproj not found. Fallback LL->XY conversion will be used.")
 
         self.get_logger().info(
-            f"Status info node started (ROS 2 Humble) | fix={gps_fix_topic} vel={gps_vel_topic} imu={imu_topic}"
+            f"Status info node started (ROS 2 Humble) | "
+            f"fix={gps_fix_topic} vel={gps_vel_topic} imu={imu_topic} dual={dual_heading_topic}"
         )
 
     def cmd_cb(self, _: Twist) -> None:
@@ -142,16 +159,10 @@ class StatusInfoNode(Node):
         gps_heading = math.atan2(self.vel_y, self.vel_x)
         self.has_gps_course_heading = True
 
-        if self.has_imu:
-            target_bias = self.wrap_angle(gps_heading - self.imu_yaw)
-            if not self.has_imu_heading_bias:
-                self.imu_heading_bias_rad = target_bias
-                self.has_imu_heading_bias = True
-            else:
-                self.imu_heading_bias_rad = self.interpolate_angle(
-                    self.imu_heading_bias_rad, target_bias, self.imu_bias_alpha
-                )
+        self.update_imu_bias(gps_heading)
 
+        if self.dual_heading_is_reliable():
+            return
         self.update_heading(gps_heading, alpha=self.gps_heading_alpha, source="gps_velocity")
 
     def imu_cb(self, msg: Imu) -> None:
@@ -163,7 +174,9 @@ class StatusInfoNode(Node):
         self.imu_yaw_rate = float(msg.angular_velocity.z)
         self.has_imu = True
 
-        if not self.gps_course_is_reliable() and self.has_imu_heading_bias:
+        if self.dual_heading_is_reliable():
+            self.update_imu_bias(self.dual_heading_rad)
+        elif not self.gps_course_is_reliable() and self.has_imu_heading_bias:
             self.update_heading(self.get_imu_aligned_heading(), alpha=1.0, source="imu_fallback")
 
         raw_factor = 1.0
@@ -200,6 +213,24 @@ class StatusInfoNode(Node):
         quality_msg = Float64()
         quality_msg.data = self.estimate_gps_quality(msg)
         self.quality_pub.publish(quality_msg)
+
+    def dual_heading_cb(self, msg: Float64) -> None:
+        self.last_dual_heading_time = self.get_clock().now()
+        self.dual_heading_rad = self.wrap_angle(math.radians(float(msg.data)))
+        self.has_dual_heading = True
+
+        if not self.seen_dual_heading_valid:
+            self.dual_heading_valid = True
+
+        self.update_imu_bias(self.dual_heading_rad)
+
+        if self.dual_heading_is_reliable():
+            self.update_heading(self.dual_heading_rad, alpha=self.dual_heading_alpha, source="dual_f9p")
+
+    def dual_heading_valid_cb(self, msg: Bool) -> None:
+        self.last_dual_heading_valid_time = self.get_clock().now()
+        self.dual_heading_valid = bool(msg.data)
+        self.seen_dual_heading_valid = True
 
     def publish_state(self) -> None:
         if not self.has_gps:
@@ -276,10 +307,40 @@ class StatusInfoNode(Node):
             min_speed = self.gps_heading_speed_threshold
         return self.gps_speed_mps >= min_speed
 
+    def dual_heading_is_reliable(self) -> bool:
+        if not self.has_dual_heading:
+            return False
+
+        now = self.get_clock().now()
+        if (now - self.last_dual_heading_time) > self.dual_heading_timeout:
+            return False
+
+        if self.seen_dual_heading_valid:
+            if (now - self.last_dual_heading_valid_time) > self.dual_heading_timeout:
+                return False
+            if not self.dual_heading_valid:
+                return False
+
+        return True
+
     def get_imu_aligned_heading(self) -> float:
         if self.has_imu_heading_bias:
             return self.wrap_angle(self.imu_yaw + self.imu_heading_bias_rad)
         return self.imu_yaw
+
+    def update_imu_bias(self, reference_heading: float) -> None:
+        if not self.has_imu:
+            return
+
+        target_bias = self.wrap_angle(reference_heading - self.imu_yaw)
+        if not self.has_imu_heading_bias:
+            self.imu_heading_bias_rad = target_bias
+            self.has_imu_heading_bias = True
+            return
+
+        self.imu_heading_bias_rad = self.interpolate_angle(
+            self.imu_heading_bias_rad, target_bias, self.imu_bias_alpha
+        )
 
     def update_heading(self, target_heading: float, alpha: float, source: str) -> None:
         target_heading = self.wrap_angle(target_heading)

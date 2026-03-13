@@ -90,6 +90,8 @@ install(PROGRAMS
   sensing/status_info_node.py
   sensing/wheel_odom_node.py
   sensing/dual_gnss_heading_node.py
+  sensing/gnss_velocity_bridge_node.py
+  sensing/imu_axis_check_gui.py
   navigation/path_follower_node.py
   navigation/path_maker_node.py
   DESTINATION lib/${PROJECT_NAME}

@@ -52,16 +52,18 @@ class NTRIPConnect(Thread):
                 ntrip_stream = self.node.ntrip_stream
                 ntrip_user = self.node.ntrip_user
                 ntrip_pass = self.node.ntrip_pass
-                nmea_gga = self.node.get_nmea_gga()
+                nmea_gga, gga_source = self.node.get_nmea_gga_with_source()
 
                 if not ntrip_server or not ntrip_stream:
                     self.node.get_logger().error("NTRIP server/stream is empty")
                     time.sleep(1.0)
                     continue
                 if not nmea_gga:
-                    self.node.get_logger().warn("No usable NMEA GGA is available yet")
+                    self.node.log_waiting_for_any_gga()
                     time.sleep(1.0)
                     continue
+
+                self.node.log_selected_gga_source(gga_source)
 
                 server_parts = ntrip_server.split(':')
                 server = server_parts[0]
@@ -227,6 +229,7 @@ class NTRIPConnect(Thread):
                             
                             self.node.pub.publish(rmsg)
                             rtcm_msgs_found += 1
+                            self.node.note_rtcm_activity(rtcm_msgs_found)
                             
                             i += total_length
                             continue
@@ -271,6 +274,11 @@ class NTRIPClient(Node):
         self._generated_gga = ''
         self._generated_gga_time = 0.0
         self._waiting_for_live_gga_logged = False
+        self._waiting_for_any_gga_logged = False
+        self._logged_gga_source = ''
+        self._rtcm_active_logged = False
+        self._live_fix_gga_logged = False
+        self._live_topic_gga_logged = False
 
         self.get_logger().info(f"NTRIP Client initialized with server: {self.ntrip_server}, stream: {self.ntrip_stream}")
         self.get_logger().info(f"Publishing RTCM messages to: {self.rtcm_topic}")
@@ -302,12 +310,17 @@ class NTRIPClient(Node):
             return self._is_recent(self._live_nmea_gga_time) or self._is_recent(self._generated_gga_time)
 
     def get_nmea_gga(self) -> str:
+        return self.get_nmea_gga_with_source()[0]
+
+    def get_nmea_gga_with_source(self) -> tuple[str, str]:
         with self._gga_lock:
             if self._is_recent(self._live_nmea_gga_time):
-                return self._live_nmea_gga
+                return self._live_nmea_gga, 'live_topic'
             if self._is_recent(self._generated_gga_time):
-                return self._generated_gga
-            return self.nmea_gga
+                return self._generated_gga, 'fix_topic'
+            if self.nmea_gga:
+                return self.nmea_gga, 'static'
+            return '', 'none'
 
     def log_waiting_for_live_gga(self) -> None:
         if self._waiting_for_live_gga_logged:
@@ -320,6 +333,37 @@ class NTRIPClient(Node):
         joined = ', '.join(sources) if sources else 'configured GPS topics'
         self.get_logger().info(f"Waiting for live GGA from {joined} before connecting to NTRIP caster")
         self._waiting_for_live_gga_logged = True
+        self._waiting_for_any_gga_logged = False
+
+    def log_waiting_for_any_gga(self) -> None:
+        if self._waiting_for_any_gga_logged:
+            return
+        self.get_logger().warn(
+            "No usable NMEA GGA is available yet. "
+            "Set nmea_gga to skip startup wait, or keep waiting for live /fix."
+        )
+        self._waiting_for_any_gga_logged = True
+
+    def log_selected_gga_source(self, source: str) -> None:
+        if source == self._logged_gga_source:
+            return
+        messages = {
+            'live_topic': f'Using live NMEA GGA from {self.nmea_gga_topic or "configured NMEA topic"}',
+            'fix_topic': f'Using generated GGA from {self.fix_topic}',
+            'static': 'Using static fallback NMEA GGA parameter',
+        }
+        text = messages.get(source)
+        if text:
+            self.get_logger().info(text)
+            self._logged_gga_source = source
+
+    def note_rtcm_activity(self, batch_count: int) -> None:
+        if self._rtcm_active_logged:
+            return
+        self.get_logger().info(
+            f"RTCM stream active on {self.rtcm_topic} (first batch: {batch_count} message(s))"
+        )
+        self._rtcm_active_logged = True
 
     def nmea_callback(self, msg: String) -> None:
         line = msg.data.strip()
@@ -329,6 +373,10 @@ class NTRIPClient(Node):
             self._live_nmea_gga = line
             self._live_nmea_gga_time = time.time()
         self._waiting_for_live_gga_logged = False
+        self._waiting_for_any_gga_logged = False
+        if not self._live_topic_gga_logged:
+            self.get_logger().info(f"Live NMEA GGA received from {self.nmea_gga_topic}")
+            self._live_topic_gga_logged = True
 
     def fix_callback(self, msg: NavSatFix) -> None:
         gga = self._build_gga_from_fix(msg)
@@ -338,6 +386,10 @@ class NTRIPClient(Node):
             self._generated_gga = gga
             self._generated_gga_time = time.time()
         self._waiting_for_live_gga_logged = False
+        self._waiting_for_any_gga_logged = False
+        if not self._live_fix_gga_logged:
+            self.get_logger().info(f"Generated live GGA from {self.fix_topic}")
+            self._live_fix_gga_logged = True
 
     def _build_gga_from_fix(self, msg: NavSatFix) -> str:
         lat = float(msg.latitude)

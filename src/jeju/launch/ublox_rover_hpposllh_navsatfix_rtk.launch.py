@@ -10,30 +10,46 @@ from launch_ros.descriptions import ComposableNode
 
 def generate_launch_description():
     namespace = LaunchConfiguration('namespace')
+    instance_name = LaunchConfiguration('instance_name')
     device_family = LaunchConfiguration('device_family')
     device_serial_string = LaunchConfiguration('device_serial_string')
+    device_actual = LaunchConfiguration('device_actual')
     frame_id = LaunchConfiguration('frame_id')
+    rtcm_input_topic = LaunchConfiguration('rtcm_input_topic')
 
     log_level_arg = DeclareLaunchArgument(
         'log_level', default_value=TextSubstitution(text='INFO'))
     namespace_arg = DeclareLaunchArgument(
         'namespace', default_value='')
+    instance_name_arg = DeclareLaunchArgument(
+        'instance_name',
+        default_value='gps',
+        description='Unique instance label used to disambiguate container names')
     device_family_arg = DeclareLaunchArgument(
         'device_family', default_value=TextSubstitution(text='F9P'))
     device_serial_string_arg = DeclareLaunchArgument(
         'device_serial_string',
         default_value='',
         description='Serial string of the device to use')
+    device_actual_arg = DeclareLaunchArgument(
+        'device_actual',
+        default_value='',
+        description='Actual /dev path of the device to use when supported by the driver')
     frame_id_arg = DeclareLaunchArgument(
         'frame_id',
         default_value='ubx',
         description='The frame_id to use in header of published messages')
+    rtcm_input_topic_arg = DeclareLaunchArgument(
+        'rtcm_input_topic',
+        default_value='/ntrip_client/rtcm',
+        description='RTCM input topic remapped into the ublox driver')
 
     # Keep the existing NavSatFix pipeline but also publish PVT/RELPOSNED so RTK
     # float/fixed state is directly observable in the UI.
     params = [
         {'DEVICE_FAMILY': device_family},
         {'DEVICE_SERIAL_STRING': device_serial_string},
+        {'DEVICE_ACTUAL': device_actual},
         {'FRAME_ID': frame_id},
         {'CFG_USBOUTPROT_NMEA': False},
         {'CFG_RATE_MEAS': 10},
@@ -45,10 +61,11 @@ def generate_launch_description():
         {'CFG_MSGOUT_UBX_NAV_PVT_USB': 1},
         {'CFG_MSGOUT_UBX_NAV_RELPOSNED_USB': 1},
         {'CFG_MSGOUT_UBX_NAV_SIG_USB': 1},
+        {'CFG_MSGOUT_UBX_NAV_VELNED_USB': 1},
     ]
 
     container1 = ComposableNodeContainer(
-        name='ublox_dgnss_container',
+        name=[instance_name, TextSubstitution(text='_ublox_dgnss_container')],
         namespace='',
         package='rclcpp_components',
         executable='component_container_mt',
@@ -59,13 +76,16 @@ def generate_launch_description():
                 plugin='ublox_dgnss::UbloxDGNSSNode',
                 name='ublox_dgnss',
                 namespace=namespace,
-                parameters=params
+                parameters=params,
+                remappings=[
+                    ('/ntrip_client/rtcm', rtcm_input_topic),
+                ],
             )
         ]
     )
 
     container2 = ComposableNodeContainer(
-        name='ublox_nav_sat_fix_hp_container',
+        name=[instance_name, TextSubstitution(text='_ublox_nav_sat_fix_hp_container')],
         namespace='',
         package='rclcpp_components',
         executable='component_container_mt',
@@ -83,9 +103,12 @@ def generate_launch_description():
     return launch.LaunchDescription([
         log_level_arg,
         namespace_arg,
+        instance_name_arg,
         device_family_arg,
         device_serial_string_arg,
+        device_actual_arg,
         frame_id_arg,
+        rtcm_input_topic_arg,
         container1,
         container2,
     ])

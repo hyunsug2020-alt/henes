@@ -1,0 +1,105 @@
+devices:
+  - name: gps1
+    role: gps
+    symlink: henes_gps
+    extra_symlinks:
+      - henes_gps1
+    default_for_role: true
+    family: F9P
+    notes: Primary rover GPS. Keep the legacy /dev/henes_gps link for compatibility.
+    match:
+      method: serial
+      vendor_id: "1546"
+      product_id: "0502"
+      serial_short: "DBTP8MS9"
+
+  - name: gps2
+    role: gps
+    symlink: henes_gps2
+    family: F9P
+    notes: Secondary/base GPS of the same type.
+    match:
+      method: serial
+      vendor_id: "1546"
+      product_id: "0502"
+      serial_short: "DBTHP5CP"
+
+  - name: imu1
+    role: imu
+    symlink: henes_imu
+    extra_symlinks:
+      - henes_imu1
+    default_for_role: true
+    notes: Primary IMU. Fill the match block before installing rules if the current rule changes.
+    match:
+      method: serial
+      vendor_id: "10c4"
+      product_id: "ea60"
+      serial_short: "0001"
+
+  - name: imu2
+    role: imu
+    symlink: henes_imu2
+    notes: Secondary IMU. Optional.
+    match:
+      method: serial
+      vendor_id: "REPLACE_ME_IMU2_VENDOR"
+      product_id: "REPLACE_ME_IMU2_PRODUCT"
+      serial_short: "REPLACE_ME_IMU2_SERIAL"
+
+  - name: arduino1
+    role: arduino
+    symlink: henes_arduino
+    extra_symlinks:
+      - henes_arduino1
+    default_for_role: true
+    notes: Primary drive controller. Keep the legacy /dev/henes_arduino link for compatibility.
+    match:
+      method: serial
+      vendor_id: "2341"
+      product_id: "0042"
+      serial_short: "24235313336351513022"
+
+  - name: arduino2
+    role: arduino
+    symlink: henes_arduino2
+    notes: Secondary controller or test board. Optional.
+    match:
+      method: serial
+      vendor_id: "REPLACE_ME_ARDUINO2_VENDOR"
+      product_id: "REPLACE_ME_ARDUINO2_PRODUCT"
+      serial_short: "REPLACE_ME_ARDUINO2_SERIAL"
+
+  - name: lidar1
+    role: lidar
+    symlink: henes_lidar
+    extra_symlinks:
+      - henes_lidar1
+    default_for_role: true
+    notes: Primary lidar if a tty-based lidar is used.
+    match:
+      method: serial
+      vendor_id: "REPLACE_ME_LIDAR_VENDOR"
+      product_id: "REPLACE_ME_LIDAR_PRODUCT"
+      serial_short: "REPLACE_ME_LIDAR_SERIAL"
+
+detection_rules:
+  - role: gps
+    family: F9P
+    match:
+      vendor_id: "1546"
+      model_regex: "ZED-F9P"
+
+  - role: imu
+    match:
+      vendor_id: "10c4"
+      product_id: "ea60"
+
+  - role: arduino
+    match:
+      vendor_id: "2341"
+      product_id: "0042"
+
+  - role: lidar
+    match:
+      model_regex: "REPLACE_ME_LIDAR_MODEL_REGEX"

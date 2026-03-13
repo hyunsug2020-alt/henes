@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import re
+import sys
 from pathlib import Path
 
 from launch import LaunchDescription
@@ -11,6 +12,12 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+
+LAUNCH_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(LAUNCH_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(LAUNCH_REPO_ROOT))
+
+from control.device_config import default_device_config_path
 
 
 def _prompt_path_id(context):
@@ -45,16 +52,15 @@ def _prompt_path_id(context):
 
 def generate_launch_description():
     enable_serial = DeclareLaunchArgument('enable_serial', default_value='true')
-    enable_gps = DeclareLaunchArgument('enable_gps', default_value='false')
     enable_status = DeclareLaunchArgument('enable_status', default_value='true')
     enable_imu = DeclareLaunchArgument('enable_imu', default_value='true')
-    enable_ntrip = DeclareLaunchArgument('enable_ntrip', default_value='false')
     enable_lidar = DeclareLaunchArgument('enable_lidar', default_value='false')
     enable_mpc_follower = DeclareLaunchArgument('enable_mpc_follower', default_value='true')
-    arduino_port = DeclareLaunchArgument('arduino_port', default_value='/dev/henes_arduino')
-    imu_device = DeclareLaunchArgument('imu_device', default_value='/dev/henes_imu')
-    gps_device = DeclareLaunchArgument('gps_device', default_value='/dev/henes_gps')
-    gps_device_serial = DeclareLaunchArgument('gps_device_serial', default_value='')
+    device_config_file = DeclareLaunchArgument('device_config_file', default_value=default_device_config_path())
+    arduino_name = DeclareLaunchArgument('arduino_name', default_value='')
+    arduino_port = DeclareLaunchArgument('arduino_port', default_value='')
+    imu_name = DeclareLaunchArgument('imu_name', default_value='')
+    imu_device = DeclareLaunchArgument('imu_device', default_value='')
     path_dir = DeclareLaunchArgument('path_dir', default_value='~/henes_ws_ros2/paths')
     path_id = DeclareLaunchArgument(
         'path_id',
@@ -109,7 +115,7 @@ def generate_launch_description():
             'enable_joy': 'false',
             'enable_teleop': 'false',
             'enable_serial': LaunchConfiguration('enable_serial'),
-            'enable_gps': LaunchConfiguration('enable_gps'),
+            'enable_gps': 'false',
             'enable_status': LaunchConfiguration('enable_status'),
             'enable_wheel_odom': 'false',
             'enable_path_maker': 'false',
@@ -118,26 +124,26 @@ def generate_launch_description():
             'enable_mpc_follower': LaunchConfiguration('enable_mpc_follower'),
             'enable_imu': LaunchConfiguration('enable_imu'),
             'enable_lidar': LaunchConfiguration('enable_lidar'),
-            'enable_ntrip': LaunchConfiguration('enable_ntrip'),
+            'enable_ntrip': 'false',
+            'device_config_file': LaunchConfiguration('device_config_file'),
+            'arduino_name': LaunchConfiguration('arduino_name'),
             'arduino_port': LaunchConfiguration('arduino_port'),
+            'imu_name': LaunchConfiguration('imu_name'),
             'imu_device': LaunchConfiguration('imu_device'),
-            'gps_device': LaunchConfiguration('gps_device'),
-            'gps_device_serial': LaunchConfiguration('gps_device_serial'),
         }.items(),
     )
 
     return LaunchDescription([
         enable_serial,
-        enable_gps,
         enable_status,
         enable_imu,
-        enable_ntrip,
         enable_lidar,
         enable_mpc_follower,
+        device_config_file,
+        arduino_name,
         arduino_port,
+        imu_name,
         imu_device,
-        gps_device,
-        gps_device_serial,
         path_dir,
         path_id,
         enable_gps_rtk_gui,

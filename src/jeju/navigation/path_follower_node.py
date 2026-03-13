@@ -8,7 +8,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
-from sensor_msgs.msg import Imu, NavSatFix
+from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Float64
 
 
@@ -27,6 +27,10 @@ class PathFollowerNode(Node):
         self.declare_parameter("arrival_threshold_forward", 1.0)
         self.declare_parameter("arrival_threshold_reverse", 0.6)
         self.declare_parameter("use_imu_heading_fallback", True)
+        self.declare_parameter("odom_topic", "/odometry/filtered")
+        self.declare_parameter("path_topic", "/global_path")
+        self.declare_parameter("heading_topic", "/ublox_gps/heading")
+        self.declare_parameter("imu_topic", "/ublox_gps/imu")
 
         self.forward_speed_kmh = float(self.get_parameter("forward_speed_kmh").value)
         self.reverse_speed_kmh = float(self.get_parameter("reverse_speed_kmh").value)
@@ -36,6 +40,10 @@ class PathFollowerNode(Node):
         self.arrival_threshold_forward = float(self.get_parameter("arrival_threshold_forward").value)
         self.arrival_threshold_reverse = float(self.get_parameter("arrival_threshold_reverse").value)
         self.use_imu_heading_fallback = bool(self.get_parameter("use_imu_heading_fallback").value)
+        odom_topic = str(self.get_parameter("odom_topic").value)
+        path_topic = str(self.get_parameter("path_topic").value)
+        heading_topic = str(self.get_parameter("heading_topic").value)
+        imu_topic = str(self.get_parameter("imu_topic").value)
 
         self.global_path = Path()
         self.has_path = False
@@ -49,16 +57,13 @@ class PathFollowerNode(Node):
         self.current_driving_direction = 1
         self.direction_profile: List[int] = []
         self.latest_odom = Odometry()
-        self.latest_gps_fix = NavSatFix()
-        self.has_gps = False
 
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
 
-        self.create_subscription(Odometry, "/odometry/filtered", self.odom_cb, 20)
-        self.create_subscription(Path, "/global_path", self.global_path_cb, 10)
-        self.create_subscription(Float64, "/ublox_gps/heading", self.heading_cb, 20)
-        self.create_subscription(Imu, "/ublox_gps/imu", self.imu_cb, 20)
-        self.create_subscription(NavSatFix, "/ublox_gps/fix", self.gps_cb, 10)
+        self.create_subscription(Odometry, odom_topic, self.odom_cb, 20)
+        self.create_subscription(Path, path_topic, self.global_path_cb, 10)
+        self.create_subscription(Float64, heading_topic, self.heading_cb, 20)
+        self.create_subscription(Imu, imu_topic, self.imu_cb, 20)
         self.create_subscription(Bool, "/teleop_mode", self.teleop_cb, 10)
         self.create_subscription(Bool, "/obstacle_stop", self.obstacle_stop_cb, 10)
         self.create_subscription(Float64, "/slope_factor", self.slope_factor_cb, 10)
@@ -66,7 +71,10 @@ class PathFollowerNode(Node):
         hz = float(self.get_parameter("control_rate_hz").value)
         self.create_timer(1.0 / max(hz, 1.0), self.control_loop)
 
-        self.get_logger().info("Path follower node started (ROS 2 Humble)")
+        self.get_logger().info(
+            f"Path follower node started (ROS 2 Humble) | "
+            f"odom={odom_topic} path={path_topic} heading={heading_topic} imu={imu_topic}"
+        )
 
     def odom_cb(self, msg: Odometry) -> None:
         self.latest_odom = msg
@@ -86,10 +94,6 @@ class PathFollowerNode(Node):
         yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
         self.fused_heading_deg = math.degrees(yaw)
         self.has_heading = True
-
-    def gps_cb(self, msg: NavSatFix) -> None:
-        self.latest_gps_fix = msg
-        self.has_gps = True
 
     def teleop_cb(self, msg: Bool) -> None:
         self.teleop_mode = bool(msg.data)

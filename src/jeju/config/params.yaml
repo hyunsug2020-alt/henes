@@ -23,6 +23,10 @@ status_info_node:
     gps_heading_alpha: 0.35
     imu_bias_alpha: 0.1
     yaw_offset_deg: 0.0
+    dual_heading_topic: /dual_f9p/heading
+    dual_heading_valid_topic: /dual_f9p/heading_valid
+    dual_heading_timeout_sec: 0.5
+    dual_heading_alpha: 1.0
 
 mpc_path_follower_node:
   ros__parameters:
