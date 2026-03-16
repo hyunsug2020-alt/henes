@@ -1,0 +1,61 @@
+version: "3.8"
+
+# ============================================================
+# MORAI MPC Docker Compose
+# 호스트: Ubuntu 20.04 Foxy
+# 컨테이너: Ubuntu 22.04 Humble
+# ============================================================
+
+services:
+  moraimpc:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: moraimpc:humble
+    container_name: moraimpc
+
+    # ── 디스플레이 (Iridescence GUI + MORAI 연동) ──
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+
+    volumes:
+      # X11 소켓 (GUI 표시)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # 소스 코드 실시간 반영
+      - ../src:/home/moraimpc/src:rw
+      # 경로 파일 공유
+      - ../bags:/home/moraimpc/bags:rw
+      # 설정 파일
+      - ../src/moraimpc/config:/home/moraimpc/config:rw
+
+    # ── 네트워크 (MORAI 시뮬레이터와 통신) ──
+    network_mode: host
+
+    # ── GPU 사용 (Iridescence 렌더링) ──
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    # ── 권한 ──
+    privileged: false
+    ipc: host
+
+    stdin_open: true
+    tty: true
+
+    # ── 기본 실행 명령 ──
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        source /home/moraimpc/install/setup.bash 2>/dev/null || true &&
+        ros2 launch moraimpc morai_full.launch.py
+      "
