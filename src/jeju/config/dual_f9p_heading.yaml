@@ -1,0 +1,23 @@
+dual_gnss_heading_node:
+  ros__parameters:
+    # Rover RELPOSNED topic from the second F9P.
+    relpos_topic: /gnss_rover/ubx_nav_rel_pos_ned
+
+    # Keep this separate from the current /ublox_gps/heading path until hardware is verified.
+    heading_topic: /dual_f9p/heading
+    heading_accuracy_topic: /dual_f9p/heading_accuracy_deg
+    baseline_length_topic: /dual_f9p/baseline_length_m
+    heading_valid_topic: /dual_f9p/heading_valid
+
+    # 2 = fixed ambiguity, 1 = float, 0 = none.
+    min_carr_soln_status: 2
+    require_relpos_valid: true
+    require_heading_valid: true
+
+    # If the published heading points to the wrong vehicle axis:
+    # front/rear reversed -> add 180.0
+    # left/right baseline -> add +/-90.0 after checking direction
+    heading_offset_deg: 0.0
+
+    # Small smoothing on valid heading updates.
+    heading_alpha: 0.35

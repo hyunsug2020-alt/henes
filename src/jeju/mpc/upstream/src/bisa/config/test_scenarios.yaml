@@ -1,0 +1,39 @@
+# Test-only scenario catalog.
+# Role:
+# - Used by scripts/test_collision_scenarios.py
+# - Not consumed by problem3_cpp_launch.py runtime path
+#
+# Field meaning:
+# - name: scenario key
+# - description: human-readable summary
+# - duration: expected run time [s]
+# - cavs: active CAV IDs in this scenario
+# - hvs: active HV IDs in this scenario
+# - safety_distance: minimum allowed spacing [m] for safety checks
+# - expected_collisions: expected number of collisions
+# - collision_point: expected encounter position [x, y]
+# - expected_behavior: expected qualitative behavior
+scenarios:
+  - name: "roundabout_congestion"
+    description: "All 4 CAVs + 2 HVs in roundabout"
+    duration: 120
+    cavs: [1, 2, 3, 4]
+    hvs: [19, 20]
+    safety_distance: 0.4
+    expected_collisions: 0
+
+  - name: "priority_test"
+    description: "High priority CAV 1 vs Low priority CAV 3"
+    duration: 60
+    cavs: [1, 3]
+    hvs: []
+    collision_point: [0.5, 0.0]
+    expected_behavior: "CAV 3 stops, CAV 1 passes"
+
+  - name: "hv_near_miss"
+    description: "CAV 1 vs HV 19 in roundabout"
+    duration: 60
+    cavs: [1]
+    hvs: [19]
+    safety_distance: 0.5
+    expected_collisions: 0

@@ -1,0 +1,11 @@
+{
+  "maj_ver": 1,
+  "min_ver": 0,
+  "global_coordinate_system": "Local",
+  "local_origin_in_global": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "lane_change_link_included": false
+}

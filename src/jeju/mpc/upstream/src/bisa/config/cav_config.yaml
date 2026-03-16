@@ -1,0 +1,245 @@
+#
+# Main runtime configuration used by:
+# - launch/problem3_cpp_launch.py
+#
+# File role:
+# - Defines active CAV IDs and shared path-generation settings.
+# - Defines per-CAV MPC tracker parameters for slots cav01~cav04.
+# - Defines HV route settings for simulator background traffic.
+#
+/**:
+  ros__parameters:
+    # Active autonomous vehicles to spawn.
+    cav_ids:
+    - 1
+    - 2
+    - 3
+    - 4
+
+    # Legacy priority list (kept for compatibility with older tooling).
+    high_priority_ids:
+    - 1
+    - 2
+
+    # Local path generation window size (number of path points).
+    local_path_size: 140
+
+    # Closest-point search bounds and smoothing controls.
+    # search_window: max index search span around previous closest point.
+    search_window: 60
+    # max_index_step: clamp on index jump between control cycles.
+    max_index_step: 12
+    # smooth_window: path smoothing width.
+    smooth_window: 2
+    # corner_smooth_window: additional smoothing around corners.
+    corner_smooth_window: 1
+    # corner_curvature_threshold: corner detection sensitivity.
+    corner_curvature_threshold: 0.05
+
+# ---------------------------------------------------------------------------
+# MPC parameter glossary (applies to all mpc_tracker_cavXX sections below)
+# ---------------------------------------------------------------------------
+# time_step: controller update period [s]
+# horizon: prediction horizon length [steps]
+# Q_pos, Q_heading: tracking cost weights for position and heading errors
+# weight_curvature: steering curvature smoothness weight
+# weight_input: control effort penalty
+# max_velocity, min_velocity: commanded speed limits [m/s]
+# max_accel: longitudinal accel limit [m/s^2]
+# max_angular_vel: steering/yaw-rate limit used by model constraints
+# kappa_limit_ref_velocity: reference speed used in curvature limiting
+# max_omega_abs: output yaw-rate absolute bound [rad/s]
+# max_omega_rate: yaw-rate change-rate bound [rad/s^2]
+# max_v_rate: speed command slew-rate bound [m/s^2]
+# ref_preview_steps: lookahead reference index shift (anticipation)
+# sigmoid_tau_accel, sigmoid_tau_decel: accel/decel response shaping
+# lateral_bound: allowed lateral error bound before slack dominates
+# w_lateral_slack_lin, w_lateral_slack_quad: lateral slack penalties
+# osqp_max_iter, osqp_eps_abs, osqp_eps_rel, osqp_polish: OSQP settings
+# enable_path_fallback: enable geometric fallback steering helper
+# fallback_min_abs_omega: minimum non-zero fallback yaw-rate
+# fallback_lookahead_index: fallback lookahead index on path
+# fallback_max_abs_omega: fallback yaw-rate cap
+# fallback_blend: MPC/fallback blending ratio
+# path_reset_distance_threshold: threshold to reset path-hold behavior
+# path_hold_distance_gain, path_hold_heading_gain: hold-controller gains
+# path_hold_max_omega: path-hold yaw-rate cap
+# path_hold_lookahead_index: path-hold lookahead index
+# path_hold_recovery_distance: distance to leave hold recovery
+# path_hold_heading_error_gain, path_hold_cross_track_gain: hold gains
+# path_hold_recovery_blend: blend during hold-to-normal recovery
+# curve_speed_enable: enable curve-speed reduction
+# curve_speed_heading_threshold: heading threshold for curve slowdown
+# curve_speed_reduction_gain: speed reduction gain in corners
+# curve_speed_min_ratio: minimum speed ratio after curve slowdown
+# overshoot_guard_distance: guard radius for end-of-segment overshoot
+# overshoot_reverse_damping: reverse damping near overshoot
+# oscillation_guard_enable: enable anti-oscillation damping
+# oscillation_guard_cte_deadband, oscillation_guard_heading_deadband: deadbands
+# oscillation_guard_reverse_damping: reverse damping in oscillation guard
+# adaptive_corner_mode_enable: adaptive corner handling near high curvature
+# adaptive_near_cte_thresh, adaptive_near_heading_thresh: trigger thresholds
+# adaptive_near_omega_damping: damping ratio for adaptive corner mode
+# adaptive_near_omega_rate_scale: omega-rate scale in adaptive mode
+# adaptive_near_v_scale: velocity scale in adaptive mode
+# off_path_recovery_enable: enable explicit off-path recovery
+# off_path_recovery_distance: enter recovery when farther than this
+# off_path_recovery_exit_distance: exit recovery below this distance
+# off_path_recovery_speed: fixed speed during recovery [m/s]
+# off_path_recovery_heading_gain, off_path_recovery_cte_gain: recovery gains
+# off_path_recovery_max_omega: recovery yaw-rate cap
+
+mpc_tracker_cav01:
+  ros__parameters:
+    time_step: 0.05
+    Q_pos: 20.0
+    Q_heading: 8.0
+    weight_curvature: 1.0
+    weight_input: 1.5
+    max_velocity: 0.744
+    min_velocity: 0.18
+    max_accel: 3.50
+    max_angular_vel: 2.30
+    kappa_limit_ref_velocity: 0.28
+    max_omega_abs: 2.30
+    max_omega_rate: 45.0
+    max_v_rate: 2.2
+    sigmoid_tau_accel: 0.40
+    sigmoid_tau_decel: 0.20
+    ref_preview_steps: 2
+    lateral_bound: 0.20
+    w_lateral_slack_lin: 3000.0
+    w_lateral_slack_quad: 35000.0
+    osqp_max_iter: 2000
+    osqp_eps_abs: 1.0e-4
+    osqp_eps_rel: 1.0e-4
+    osqp_polish: false
+    enable_path_fallback: true
+    fallback_min_abs_omega: 0.05
+    fallback_lookahead_index: 8
+    fallback_max_abs_omega: 1.40
+    fallback_blend: 0.30
+    path_reset_distance_threshold: 2.5
+    path_hold_distance_gain: 0.22
+    path_hold_heading_gain: 0.22
+    path_hold_max_omega: 1.40
+    path_hold_lookahead_index: 12
+    path_hold_recovery_distance: 0.15
+    path_hold_heading_error_gain: 0.80
+    path_hold_cross_track_gain: 0.70
+    path_hold_recovery_blend: 0.45
+    curve_speed_enable: true
+    curve_speed_heading_threshold: 0.16
+    curve_speed_reduction_gain: 0.04
+    curve_speed_min_ratio: 0.96
+    overshoot_guard_distance: 0.13
+    overshoot_reverse_damping: 0.52
+    oscillation_guard_enable: true
+    oscillation_guard_cte_deadband: 0.08
+    oscillation_guard_heading_deadband: 0.20
+    oscillation_guard_reverse_damping: 0.70
+    adaptive_corner_mode_enable: true
+    adaptive_near_cte_thresh: 0.14
+    adaptive_near_heading_thresh: 0.14
+    adaptive_near_omega_damping: 0.55
+    adaptive_near_omega_rate_scale: 0.55
+    adaptive_near_v_scale: 0.97
+    off_path_recovery_enable: true
+    off_path_recovery_distance: 0.50
+    off_path_recovery_exit_distance: 0.22
+    off_path_recovery_speed: 0.08
+    off_path_recovery_heading_gain: 1.0
+    off_path_recovery_cte_gain: 1.2
+    off_path_recovery_max_omega: 1.0
+    horizon: 25
+mpc_tracker_cav02:
+  ros__parameters:
+    time_step: 0.05
+    Q_pos: 20.0
+    Q_heading: 8.0
+    weight_curvature: 1.0
+    weight_input: 1.5
+    max_velocity: 0.720
+    min_velocity: 0.18
+    max_accel: 1.5
+    max_angular_vel: 1.6
+    kappa_limit_ref_velocity: 0.35
+    max_omega_abs: 1.7
+    max_omega_rate: 24.0
+    max_v_rate: 2.0
+    ref_preview_steps: 2
+    enable_path_fallback: true
+    fallback_min_abs_omega: 0.05
+    fallback_lookahead_index: 12
+    fallback_max_abs_omega: 0.85
+    fallback_blend: 0.10
+    curve_speed_enable: true
+    curve_speed_heading_threshold: 0.16
+    curve_speed_reduction_gain: 0.04
+    curve_speed_min_ratio: 0.96
+    horizon: 25
+mpc_tracker_cav03:
+  ros__parameters:
+    time_step: 0.05
+    Q_pos: 20.0
+    Q_heading: 8.0
+    weight_curvature: 1.0
+    weight_input: 1.5
+    max_velocity: 0.696
+    min_velocity: 0.18
+    max_accel: 1.5
+    max_angular_vel: 2.0
+    kappa_limit_ref_velocity: 0.35
+    max_omega_abs: 1.65
+    max_omega_rate: 20.0
+    max_v_rate: 2.0
+    ref_preview_steps: 2
+    enable_path_fallback: true
+    fallback_min_abs_omega: 0.05
+    fallback_lookahead_index: 12
+    fallback_max_abs_omega: 0.8
+    fallback_blend: 0.10
+    curve_speed_enable: true
+    curve_speed_heading_threshold: 0.16
+    curve_speed_reduction_gain: 0.04
+    curve_speed_min_ratio: 0.96
+    horizon: 25
+mpc_tracker_cav04:
+  ros__parameters:
+    time_step: 0.05
+    Q_pos: 20.0
+    Q_heading: 8.0
+    weight_curvature: 1.0
+    weight_input: 1.5
+    max_velocity: 0.672
+    min_velocity: 0.18
+    max_accel: 1.5
+    max_angular_vel: 1.6
+    kappa_limit_ref_velocity: 0.35
+    max_omega_abs: 1.65
+    max_omega_rate: 19.0
+    max_v_rate: 2.0
+    ref_preview_steps: 2
+    enable_path_fallback: true
+    fallback_min_abs_omega: 0.05
+    fallback_lookahead_index: 12
+    fallback_max_abs_omega: 0.8
+    fallback_blend: 0.10
+    curve_speed_enable: true
+    curve_speed_heading_threshold: 0.16
+    curve_speed_reduction_gain: 0.04
+    curve_speed_min_ratio: 0.96
+    horizon: 25
+hv_settings:
+- id: 19
+  node_sequence:
+  - 38
+  - 41
+  - 62
+  - 38
+- id: 20
+  node_sequence:
+  - 62
+  - 41
+  - 38
+  - 62
