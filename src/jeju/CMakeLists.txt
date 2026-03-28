@@ -76,6 +76,9 @@ target_include_directories(eskf_node PRIVATE ${EIGEN3_INCLUDE_DIRS})
 ament_target_dependencies(eskf_node rclcpp std_msgs geometry_msgs sensor_msgs nav_msgs)
 target_link_libraries(eskf_node Eigen3::Eigen)
 
+add_executable(gps_odom_node src/gps_odom_node.cpp)
+ament_target_dependencies(gps_odom_node rclcpp std_msgs geometry_msgs sensor_msgs nav_msgs)
+
 # ── Python 스크립트 (GUI/제어/네비) ────────────────────────────
 install(PROGRAMS
   control/teleop_node.py
@@ -100,6 +103,7 @@ install(TARGETS
   wheel_odom_node
   status_info_node
   eskf_node
+  gps_odom_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/  DESTINATION include)

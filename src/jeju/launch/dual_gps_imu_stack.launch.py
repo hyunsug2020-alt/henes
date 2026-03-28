@@ -3,13 +3,13 @@
 """
 dual_gps_imu_stack.launch.py
 ==============================
-GPS1 + IMU + ESKF 스택 런치 (GPS1 단독 운용)
+GPS1 스택 런치 (ESKF 없이 GPS 직접 사용)
 
 노드 구성:
   - gnss_nmea_node (gnss_left / gps1 / /dev/henes_gps) → /gnss_left/fix + /gnss_left/fix_velocity
-  - IMU 드라이버 (/dev/henes_imu)
-  - eskf_node (GPS 위치 + 속도 + 헤딩 → /odometry/filtered)
+  - gps_odom_node  (GPS → /odometry/filtered + /utm_origin)
   - ntrip_ros (NTRIP RTK 보정)
+  - rosbridge WebSocket (Foxglove)
 """
 
 import os
@@ -75,12 +75,10 @@ def generate_launch_description():
     imu_name            = DeclareLaunchArgument('imu_name',            default_value='imu1')
     imu_device          = DeclareLaunchArgument('imu_device',          default_value='')
     imu_baudrate        = DeclareLaunchArgument('imu_baudrate',        default_value='921600')
-    enable_imu          = DeclareLaunchArgument('enable_imu',          default_value='true')
+    enable_imu          = DeclareLaunchArgument('enable_imu',          default_value='false')
     enable_ntrip        = DeclareLaunchArgument('enable_ntrip',        default_value='true')
-    enable_eskf         = DeclareLaunchArgument('enable_eskf',         default_value='true')
     enable_foxglove     = DeclareLaunchArgument('enable_foxglove',     default_value='true')
     utm_zone            = DeclareLaunchArgument('utm_zone',            default_value='52')
-    yaw_offset_deg      = DeclareLaunchArgument('yaw_offset_deg',      default_value='0.0')
 
     device_resolver = OpaqueFunction(function=_resolve_devices)
 
@@ -121,32 +119,20 @@ def generate_launch_description():
     )
 
     # ================================================================
-    # ESKF 노드 (위치 + 속도 + 헤딩 융합 → /odometry/filtered)
-    # 헤딩: GPS 속도 방향 기반 (속도 > 0.5m/s 시 자동 갱신)
+    # GPS Odom 노드 (GPS 직접 → /odometry/filtered + /utm_origin)
+    # ESKF 없이 GPS 위치/속도를 바로 사용
     # ================================================================
-    eskf_node = Node(
+    gps_odom_node = Node(
         package='jeju',
-        executable='eskf_node',
-        name='eskf_node',
+        executable='gps_odom_node',
+        name='gps_odom_node',
         output='screen',
         parameters=[{
-            'imu_topic':         '/handsfree/imu',
-            'gps_fix_topic':     '/gnss_left/fix',
-            'gps_vel_topic':     '/gnss_left/fix_velocity',
-            'sigma_accel':       0.05,
-            'sigma_gyro':        0.005,
-            'sigma_accel_bias':  0.001,
-            'sigma_gyro_bias':   0.0001,
-            'sigma_gps_pos':     0.5,
-            'sigma_gps_vel':     0.1,
-            'sigma_heading':     0.05,
-            'yaw_offset_deg':    LaunchConfiguration('yaw_offset_deg'),
-            'utm_zone':          LaunchConfiguration('utm_zone'),
-            'dual_heading_topic':          '',
-            'dual_heading_valid_topic':    '',
-            'dual_heading_accuracy_topic': '',
+            'utm_zone':        LaunchConfiguration('utm_zone'),
+            'gps_fix_topic':   '/gnss_left/fix',
+            'gps_vel_topic':   '/gnss_left/fix_velocity',
+            'heading_min_mps': 0.15,
         }],
-        condition=IfCondition(LaunchConfiguration('enable_eskf')),
     )
 
     # ================================================================
@@ -196,7 +182,7 @@ def generate_launch_description():
             'imu_topic':      '/handsfree/imu',
             'gps1_label':     'GPS1',
             'gps1_fix_topic': '/gnss_left/fix',
-            'heading_topic':  '/eskf/heading_deg',
+            'heading_topic':  '/gps_odom/heading_deg',
             'window_name':    'HENES Sensor Monitor',
             'refresh_hz':     15.0,
         }],
@@ -211,17 +197,15 @@ def generate_launch_description():
         imu_device,
         imu_baudrate,
         enable_imu,
-        enable_eskf,
         enable_ntrip,
         enable_foxglove,
         utm_zone,
-        yaw_offset_deg,
         # 디바이스 탐색
         device_resolver,
         # 노드
         left_gps_node,
         imu_launch,
-        eskf_node,
+        gps_odom_node,
         ntrip_node,
         rosbridge_node,
         sensor_monitor_node,
