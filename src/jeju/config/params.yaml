@@ -43,6 +43,10 @@ mpc_path_follower_node:
     speed_ki: 2.0
     speed_integral_max: 15.0
 
+    # ── nearest 탐색 / cusp ───────────────────────────
+    nearest_search_window: 80
+    cusp_cos_threshold: -0.98
+
     # ── Frenet fallback 가중치 ────────────────────────
     w_d: 1.0
     w_theta: 0.5

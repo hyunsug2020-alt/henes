@@ -46,6 +46,14 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
     this->declare_parameter("speed_ki",             2.0);
     this->declare_parameter("speed_integral_max",  15.0);
 
+    // ── nearest 탐색 / cusp 파라미터 ─────────────────────
+    // nearest_search_window: 이전 idx 기준 전방 탐색 최대 범위 (포인트 수)
+    //   너무 크면 경로 이탈 시 멀리 점프; 기본 80 ≈ 16m (간격 0.2m 기준)
+    this->declare_parameter("nearest_search_window", 80);
+    // cusp_cos_threshold: 이 값 미만의 cos(방향각) 에서만 후진 cusp 감지
+    //   -0.98 ≈ 168° — GPS 노이즈에 의한 오감지 방지 (기본 -0.5=120° 너무 민감)
+    this->declare_parameter("cusp_cos_threshold",   -0.98);
+
     // ── 값 로딩 ──────────────────────────────────────────
     control_rate_hz_   = this->get_parameter("control_rate_hz").as_double();
     forward_speed_kmh_ = this->get_parameter("forward_speed_kmh").as_double();
@@ -70,9 +78,11 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
     controller_params_.a_min              = this->get_parameter("a_min").as_double();
     controller_params_.kappa_speed_factor = this->get_parameter("kappa_speed_factor").as_double();
 
-    speed_kp_           = this->get_parameter("speed_kp").as_double();
-    speed_ki_           = this->get_parameter("speed_ki").as_double();
-    speed_integral_max_ = this->get_parameter("speed_integral_max").as_double();
+    speed_kp_             = this->get_parameter("speed_kp").as_double();
+    speed_ki_             = this->get_parameter("speed_ki").as_double();
+    speed_integral_max_   = this->get_parameter("speed_integral_max").as_double();
+    nearest_search_window_= this->get_parameter("nearest_search_window").as_int();
+    cusp_cos_threshold_   = this->get_parameter("cusp_cos_threshold").as_double();
 
     controller_.updateParameters(controller_params_);
 
@@ -187,7 +197,7 @@ void MPCPathTrackerCpp::pathCb(const nav_msgs::msg::Path::SharedPtr msg)
     direction_profile_.assign(n, 1);
 
     if (n >= 3) {
-        constexpr double kCuspThreshold = -0.5;
+        const double kCuspThreshold = cusp_cos_threshold_;
         std::vector<int> cusp_indices;
         for (int i = 1; i < n - 1; ++i) {
             const double v1x = path_[i].x - path_[i - 1].x;
@@ -292,7 +302,7 @@ int MPCPathTrackerCpp::findNearestIndex(const VehicleState & state, int prev_idx
     //   - 차량과 경로 방향이 반대인 포인트는 제외 (U자/루프 지름길 방지)
     //   - 헤딩 필터로 후보가 없으면 순수 거리 최소 포인트 사용 (fallback)
     const int start = std::max(0,     prev_idx - 5);
-    const int end   = n - 1;
+    const int end   = std::min(n - 1, prev_idx + nearest_search_window_);
 
     int best_hdg  = prev_idx;
     int best_dist = prev_idx;
@@ -369,9 +379,11 @@ void MPCPathTrackerCpp::controlLoop()
     nearest_idx_prev_ = nearest_idx;
 
     // 속도 PI 제어기
+    // v_actual: IMU 헤딩 오류에 강건하도록 GPS 속도 크기 × 방향 사용
+    //   state_.vx 는 헤딩이 180° 틀리면 부호가 반전되어 PI 폭주 유발
     const double kmh       = std::abs(forward_speed_kmh_);
     const double speed_mps = static_cast<double>(dir) * kmh / 3.6;
-    const double v_actual  = state_.vx;
+    const double v_actual  = static_cast<double>(dir) * gps_speed_mps_;
     const double v_error   = speed_mps - v_actual;
     const double dt        = 1.0 / std::max(control_rate_hz_, 1.0);
     speed_integral_ += v_error * dt;

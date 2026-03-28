@@ -75,6 +75,8 @@ private:
     double speed_kp_             {30.0};
     double speed_ki_             { 2.0};
     double speed_integral_max_   {15.0};
+    int    nearest_search_window_{80};
+    double cusp_cos_threshold_   {-0.98};
 
     // GPS 속도 기반 헤딩 (ESKF 대체)
     double gps_yaw_              {0.0};
