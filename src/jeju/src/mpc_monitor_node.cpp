@@ -1,10 +1,24 @@
-// mpc_monitor_node.cpp
-// MPC 실시간 모니터링 GUI (OpenCV)
+// mpc_monitor_node.cpp  –  MPC 실시간 디버그 GUI (OpenCV)
 //
-// 레이아웃:
-//   왼쪽(MAP_W×WIN_H)        : 경로 지도 + 차량 위치 + 오차선
-//   오른쪽 상단(GRAPH_W×560) : 4개 그래프 (횡방향 오차 / 헤딩 오차 / 속도 / 조향각)
-//   오른쪽 하단(GRAPH_W×160) : MPC 로그 패널 (/rosout)
+// 레이아웃 (1280 × 720):
+//   왼쪽 800px  : 지도 (경로·차량·오차선·진행바)
+//   오른쪽 480px:
+//     ① 상단 200px  : MPC 내부값 패널 (e_y / e_psi / 방향 / idx / 속도 / PWM / steer)
+//     ② 중단 360px  : 5개 그래프 (CTE / HdgErr / Speed_signed / cmd_steer / cmd_pwm)
+//     ③ 하단 160px  : /rosout 로그 패널
+//
+// 토픽 구독:
+//   /global_path       (nav_msgs/Path,   transient_local)
+//   /odometry/filtered (nav_msgs/Odometry)
+//   /cmd_vel           (geometry_msgs/Twist)
+//   /steering_angle    (std_msgs/Float64)
+//   /mpc/debug         (std_msgs/Float64MultiArray)
+//   /rosout            (rcl_interfaces/Log)
+//
+// /mpc/debug 인덱스:
+//   [0]=e_y(m)  [1]=e_psi(deg)  [2]=target_v(m/s signed)
+//   [3]=speed_pwm  [4]=nearest_idx  [5]=direction(1/-1)
+//   [6]=steer_cmd(deg)  [7]=goal_reached  [8]=has_path
 
 #include <algorithm>
 #include <chrono>
@@ -23,8 +37,11 @@
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <std_msgs/msg/float64.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 
-// ────────────────────────── 헬퍼 ──────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// 헬퍼
+// ──────────────────────────────────────────────────────────────
 static double yawFromQ(double qx, double qy, double qz, double qw)
 {
     return std::atan2(2.0*(qw*qz + qx*qy), 1.0 - 2.0*(qy*qy + qz*qz));
@@ -36,42 +53,44 @@ static double normAngle(double a)
     return a;
 }
 struct Pt { double x, y, yaw; };
-
 struct LogEntry {
-    uint8_t     level;   // 10=DEBUG 20=INFO 30=WARN 40=ERROR 50=FATAL
-    std::string name;    // 노드명
+    uint8_t     level;
+    std::string name;
     std::string msg;
 };
 
-// ───────────────────────── 노드 ───────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// 노드
+// ──────────────────────────────────────────────────────────────
 class MpcMonitorNode : public rclcpp::Node
 {
 public:
+    // ── 레이아웃 상수 ─────────────────────────────────────────
     static constexpr int WIN_W    = 1280;
     static constexpr int WIN_H    = 720;
     static constexpr int MAP_W    = 800;
-    static constexpr int GRAPH_W  = WIN_W - MAP_W;
-    static constexpr int LOG_H    = 165;          // 로그 패널 높이
-    static constexpr int GRAPHS_H = WIN_H - LOG_H;
-    static constexpr int N_GRAPH  = 4;
-    static constexpr int GRAPH_H  = GRAPHS_H / N_GRAPH;
+    static constexpr int SIDE_W   = WIN_W - MAP_W;   // 480
+
+    static constexpr int STATE_H  = 200;              // MPC 내부값 패널
+    static constexpr int LOG_H    = 160;              // 로그 패널
+    static constexpr int GRAPH_AREA_H = WIN_H - STATE_H - LOG_H;  // 360
+
+    static constexpr int N_GRAPH  = 5;
+    static constexpr int GRAPH_H  = GRAPH_AREA_H / N_GRAPH;       // 72
     static constexpr int N_HIST   = 400;
-    static constexpr int MAX_LOGS = 10;           // 화면에 보여줄 최대 줄 수
+    static constexpr int MAX_LOGS = 8;
 
     MpcMonitorNode() : Node("mpc_monitor_node")
     {
-        // /global_path
         auto qos_tl = rclcpp::QoS(1).reliable().transient_local();
         path_sub_ = create_subscription<nav_msgs::msg::Path>(
             "/global_path", qos_tl,
             [this](nav_msgs::msg::Path::SharedPtr m){ pathCb(m); });
 
-        // /odometry/filtered
         odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
             "/odometry/filtered", 20,
             [this](nav_msgs::msg::Odometry::SharedPtr m){ odomCb(m); });
 
-        // /cmd_vel
         cmd_sub_ = create_subscription<geometry_msgs::msg::Twist>(
             "/cmd_vel", 20,
             [this](geometry_msgs::msg::Twist::SharedPtr m){
@@ -80,15 +99,17 @@ public:
                 cmd_pwm_   = m->linear.x;
             });
 
-        // /steering_angle
         steer_sub_ = create_subscription<std_msgs::msg::Float64>(
             "/steering_angle", 20,
             [this](std_msgs::msg::Float64::SharedPtr m){
                 std::lock_guard<std::mutex> g(mu_);
-                steer_deg_ = m->data;
+                steer_hw_ = m->data;
             });
 
-        // /rosout  →  MPC 로그 수집
+        debug_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+            "/mpc/debug", 20,
+            [this](std_msgs::msg::Float64MultiArray::SharedPtr m){ debugCb(m); });
+
         rosout_sub_ = create_subscription<rcl_interfaces::msg::Log>(
             "/rosout", rclcpp::QoS(50),
             [this](rcl_interfaces::msg::Log::SharedPtr m){ logCb(m); });
@@ -97,9 +118,9 @@ public:
             std::chrono::milliseconds(50),
             [this](){ render(); });
 
-        cv::namedWindow("MPC Monitor", cv::WINDOW_NORMAL);
-        cv::resizeWindow("MPC Monitor", WIN_W, WIN_H);
-        RCLCPP_INFO(get_logger(), "MPC Monitor 시작");
+        cv::namedWindow("MPC Debug Monitor", cv::WINDOW_NORMAL);
+        cv::resizeWindow("MPC Debug Monitor", WIN_W, WIN_H);
+        RCLCPP_INFO(get_logger(), "MPC Debug Monitor 시작");
     }
 
 private:
@@ -131,7 +152,7 @@ private:
                             m->pose.pose.orientation.z,
                             m->pose.pose.orientation.w);
         const double cy = std::cos(veh_yaw_), sy = std::sin(veh_yaw_);
-        veh_vx_   =  m->twist.twist.linear.x * cy + m->twist.twist.linear.y * sy;
+        veh_vx_   = m->twist.twist.linear.x * cy + m->twist.twist.linear.y * sy;
         has_odom_ = true;
         if (traveled_.empty() ||
             std::hypot(veh_x_ - traveled_.back().x,
@@ -141,33 +162,53 @@ private:
         }
     }
 
+    void debugCb(const std_msgs::msg::Float64MultiArray::SharedPtr m)
+    {
+        if (m->data.size() < 9) return;
+        std::lock_guard<std::mutex> g(mu_);
+        dbg_e_y_        = m->data[0];
+        dbg_e_psi_      = m->data[1];     // deg
+        dbg_target_v_   = m->data[2];     // m/s signed
+        dbg_speed_pwm_  = m->data[3];     // signed
+        dbg_nearest_    = (int)m->data[4];
+        dbg_direction_  = (int)m->data[5]; // 1 or -1
+        dbg_steer_cmd_  = m->data[6];     // deg
+        dbg_goal_       = m->data[7] > 0.5;
+        has_debug_      = true;
+
+        // 히스토리
+        pushH(cte_hist_,  dbg_e_y_);
+        pushH(hdg_hist_,  dbg_e_psi_);
+        pushH(spd_hist_,  dbg_target_v_);      // signed
+        pushH(str_hist_,  dbg_steer_cmd_);
+        pushH(pwm_hist_,  dbg_speed_pwm_);
+    }
+
     void logCb(const rcl_interfaces::msg::Log::SharedPtr m)
     {
-        // DEBUG(10) 제외, INFO 이상만 표시
         if (m->level < 20) return;
-
         std::lock_guard<std::mutex> g(mu_);
-        LogEntry e;
-        e.level = m->level;
-        e.name  = m->name;
-        e.msg   = m->msg;
-        logs_.push_back(std::move(e));
+        logs_.push_back({m->level, m->name, m->msg});
         while ((int)logs_.size() > MAX_LOGS * 3) logs_.pop_front();
     }
 
     // ── 렌더 ──────────────────────────────────────────────────
     void render()
     {
-        // 데이터 복사
         std::vector<Pt> path, traveled;
         double vx, vy, vyaw, vvx;
         bool has_odom, has_path;
-        double steer, cmd_steer, cmd_pwm;
+        double steer_hw, cmd_steer, cmd_pwm;
         double cte=0, hdg_err=0;
-        std::deque<double> h_cte, h_hdg, h_spd, h_str;
+        std::deque<double> h_cte, h_hdg, h_spd, h_str, h_pwm;
         double map_scale, map_ox, map_oy;
         int nearest_i = 0;
         std::deque<LogEntry> logs_copy;
+
+        // debug panel data
+        double d_ey, d_epsi, d_tv, d_pwm, d_steer;
+        int d_nearest, d_dir;
+        bool d_goal, d_has;
 
         {
             std::lock_guard<std::mutex> g(mu_);
@@ -176,8 +217,18 @@ private:
             vx = veh_x_; vy = veh_y_; vyaw = veh_yaw_; vvx = veh_vx_;
             has_odom = has_odom_;
             has_path = !path_.empty();
-            steer    = steer_deg_;
+            steer_hw = steer_hw_;
             cmd_steer = cmd_steer_; cmd_pwm = cmd_pwm_;
+
+            d_ey     = dbg_e_y_;
+            d_epsi   = dbg_e_psi_;
+            d_tv     = dbg_target_v_;
+            d_pwm    = dbg_speed_pwm_;
+            d_nearest= dbg_nearest_;
+            d_dir    = dbg_direction_;
+            d_steer  = dbg_steer_cmd_;
+            d_goal   = dbg_goal_;
+            d_has    = has_debug_;
 
             if (has_odom && has_path) {
                 if (map_dirty_) { computeMapTransform(); map_dirty_ = false; }
@@ -187,64 +238,155 @@ private:
                 double ey = veh_y_ - ref.y;
                 cte     = -std::sin(ref.yaw)*ex + std::cos(ref.yaw)*ey;
                 hdg_err =  normAngle(veh_yaw_ - ref.yaw) * 180.0 / M_PI;
-                pushH(cte_hist_, cte);
-                pushH(hdg_hist_, hdg_err);
-                pushH(spd_hist_, std::abs(vvx));
-                pushH(str_hist_, steer);
             }
             h_cte = cte_hist_; h_hdg = hdg_hist_;
             h_spd = spd_hist_; h_str = str_hist_;
+            h_pwm = pwm_hist_;
             map_scale = map_scale_; map_ox = map_ox_; map_oy = map_oy_;
             logs_copy = logs_;
         }
 
         cv::Mat canvas(WIN_H, WIN_W, CV_8UC3, cv::Scalar(28,28,28));
 
-        // 지도
+        // ① 지도
         drawMap(canvas(cv::Rect(0, 0, MAP_W, WIN_H)),
-                path, traveled, vx, vy, vyaw, vvx, steer,
+                path, traveled, vx, vy, vyaw, vvx, steer_hw,
                 has_odom, has_path, nearest_i,
                 map_scale, map_ox, map_oy, cte, hdg_err);
 
-        // 그래프 (상단)
+        // ② MPC 내부값 패널
+        drawStatePanel(canvas(cv::Rect(MAP_W, 0, SIDE_W, STATE_H)),
+                       d_ey, d_epsi, d_tv, d_pwm, d_nearest, d_dir,
+                       d_steer, d_goal, d_has, cmd_pwm, cmd_steer);
+
+        // ③ 그래프
         {
             struct G { const std::deque<double>* d; const char* lbl; double lo,hi; cv::Scalar col; }
-            graphs[4] = {
-                {&h_cte, "Lateral Error [m]",   -2.0,  2.0, {0,220,255}},
-                {&h_hdg, "Heading Error [deg]", -30.0, 30.0, {255,200,0}},
-                {&h_spd, "Speed [m/s]",          0.0,  2.0, {0,200,100}},
-                {&h_str, "Steering [deg]",      -60.0, 60.0, {200,100,255}},
+            graphs[5] = {
+                {&h_cte, "CTE e_y [m]",           -3.0,  3.0, {0,220,255}},
+                {&h_hdg, "Hdg Err [deg]",         -45.0, 45.0, {255,200,0}},
+                {&h_spd, "Target Speed [m/s]",     -1.5,  1.5, {0,200,100}},
+                {&h_str, "MPC Steer [deg]",        -60.0, 60.0, {200,100,255}},
+                {&h_pwm, "Speed PWM",             -255.0,255.0, {255,160,50}},
             };
-            for (int i = 0; i < 4; ++i) {
-                cv::Mat row = canvas(cv::Rect(MAP_W, i*GRAPH_H, GRAPH_W, GRAPH_H));
+            for (int i = 0; i < N_GRAPH; ++i) {
+                int gy = STATE_H + i * GRAPH_H;
+                cv::Mat row = canvas(cv::Rect(MAP_W, gy, SIDE_W, GRAPH_H));
                 drawGraph(row, *graphs[i].d, graphs[i].lbl,
                           graphs[i].lo, graphs[i].hi, graphs[i].col);
-                if (i > 0)
-                    cv::line(canvas,
-                             {MAP_W, i*GRAPH_H}, {WIN_W, i*GRAPH_H},
-                             {60,60,70}, 1);
+                cv::line(canvas, {MAP_W, gy}, {WIN_W, gy}, {60,60,70}, 1);
             }
         }
 
-        // 로그 패널 (하단)
+        // ④ 로그 패널
         {
-            cv::Mat lp = canvas(cv::Rect(MAP_W, GRAPHS_H, GRAPH_W, LOG_H));
+            int ly = STATE_H + GRAPH_AREA_H;
+            cv::Mat lp = canvas(cv::Rect(MAP_W, ly, SIDE_W, LOG_H));
             drawLogPanel(lp, logs_copy);
+            cv::line(canvas, {MAP_W, ly}, {WIN_W, ly}, {90,90,90}, 1);
         }
 
-        // 구분선
-        cv::line(canvas, {MAP_W, 0},       {MAP_W, WIN_H},  {70,70,70}, 1);
-        cv::line(canvas, {MAP_W, GRAPHS_H},{WIN_W, GRAPHS_H},{90,90,90}, 1);
+        // 세로 구분선
+        cv::line(canvas, {MAP_W, 0}, {MAP_W, WIN_H}, {70,70,70}, 1);
 
-        cv::imshow("MPC Monitor", canvas);
+        cv::imshow("MPC Debug Monitor", canvas);
         cv::waitKey(1);
+    }
+
+    // ── MPC 상태 패널 ─────────────────────────────────────────
+    void drawStatePanel(cv::Mat panel,
+                        double e_y, double e_psi_deg,
+                        double target_v, double speed_pwm,
+                        int nearest, int direction,
+                        double steer_cmd, bool goal, bool has_debug,
+                        double cmd_pwm_actual, double cmd_steer_actual)
+    {
+        const int W = panel.cols, H = panel.rows;
+        panel.setTo(cv::Scalar(18, 18, 24));
+
+        if (!has_debug) {
+            cv::putText(panel, "Waiting /mpc/debug...", {10, H/2},
+                        cv::FONT_HERSHEY_SIMPLEX, 0.65, {140,140,140}, 1);
+            return;
+        }
+
+        // ─ 방향 표시줄 (전체 너비, 40px 높이) ─
+        const bool is_rev = (direction < 0);
+        cv::Scalar dir_col = is_rev ? cv::Scalar(0, 50, 220) : cv::Scalar(0, 160, 60);
+        cv::rectangle(panel, {0,0}, {W, 40}, dir_col, -1);
+        const char* dir_label = is_rev ? "<<  REVERSE  <<" : ">>  FORWARD  >>";
+        cv::putText(panel, dir_label, {W/2 - 100, 28},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.85,
+                    is_rev ? cv::Scalar(255,200,200) : cv::Scalar(200,255,200), 2);
+
+        // GOAL 표시
+        if (goal) {
+            cv::rectangle(panel, {W-90, 5}, {W-5, 35}, {0,200,200}, -1);
+            cv::putText(panel, "GOAL", {W-80, 28},
+                        cv::FONT_HERSHEY_SIMPLEX, 0.7, {0,0,0}, 2);
+        }
+
+        // ─ 수치 테이블 ─
+        // Row y 기준
+        const int R1 = 65, R2 = 105, R3 = 145;
+        const int C1 = 8,  C2 = 160, C3 = 315;
+
+        // 색상 헬퍼 (임계 초과시 빨간)
+        auto valColor = [](double v, double warn, double err) -> cv::Scalar {
+            double a = std::abs(v);
+            if (a >= err)  return {0, 60, 255};
+            if (a >= warn) return {0, 200, 255};
+            return {200, 255, 200};
+        };
+
+        char buf[64];
+
+        // Row1: e_y | e_psi | nearest_idx
+        cv::putText(panel, "e_y [m]", {C1, R1-16}, cv::FONT_HERSHEY_SIMPLEX, 0.32, {160,160,160}, 1);
+        std::snprintf(buf, sizeof(buf), "%+.3f", e_y);
+        cv::putText(panel, buf, {C1, R1},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.75, valColor(e_y, 1.0, 2.5), 2);
+
+        cv::putText(panel, "e_psi [deg]", {C2, R1-16}, cv::FONT_HERSHEY_SIMPLEX, 0.32, {160,160,160}, 1);
+        std::snprintf(buf, sizeof(buf), "%+.1f", e_psi_deg);
+        cv::putText(panel, buf, {C2, R1},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.75, valColor(e_psi_deg, 20.0, 45.0), 2);
+
+        cv::putText(panel, "nearest idx", {C3, R1-16}, cv::FONT_HERSHEY_SIMPLEX, 0.32, {160,160,160}, 1);
+        std::snprintf(buf, sizeof(buf), "%d", nearest);
+        cv::putText(panel, buf, {C3, R1}, cv::FONT_HERSHEY_SIMPLEX, 0.75, {200,200,200}, 2);
+
+        // Row2: target_v | speed_pwm | steer_cmd(MPC)
+        cv::putText(panel, "Target v [m/s]", {C1, R2-16}, cv::FONT_HERSHEY_SIMPLEX, 0.32, {160,160,160}, 1);
+        std::snprintf(buf, sizeof(buf), "%+.3f", target_v);
+        cv::Scalar v_col = (target_v < -0.05) ? cv::Scalar(100,100,255) : cv::Scalar(100,255,150);
+        cv::putText(panel, buf, {C1, R2}, cv::FONT_HERSHEY_SIMPLEX, 0.75, v_col, 2);
+
+        cv::putText(panel, "Speed PWM", {C2, R2-16}, cv::FONT_HERSHEY_SIMPLEX, 0.32, {160,160,160}, 1);
+        std::snprintf(buf, sizeof(buf), "%+.1f", speed_pwm);
+        cv::Scalar pwm_col = (speed_pwm < -5.0) ? cv::Scalar(100,100,255)
+                           : (std::abs(speed_pwm) < 20.0) ? cv::Scalar(0,200,255)
+                           : cv::Scalar(100,255,150);
+        cv::putText(panel, buf, {C2, R2}, cv::FONT_HERSHEY_SIMPLEX, 0.75, pwm_col, 2);
+
+        cv::putText(panel, "MPC steer [deg]", {C3, R2-16}, cv::FONT_HERSHEY_SIMPLEX, 0.32, {160,160,160}, 1);
+        std::snprintf(buf, sizeof(buf), "%+.1f", steer_cmd);
+        cv::putText(panel, buf, {C3, R2},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.75, valColor(steer_cmd, 35.0, 50.0), 2);
+
+        // Row3: cmd_vel 실제 발행값 (Arduino에 가는 값)
+        cv::line(panel, {0, R3-26}, {W, R3-26}, {50,50,60}, 1);
+        cv::putText(panel, "CMD->Arduino:", {C1, R3-12}, cv::FONT_HERSHEY_SIMPLEX, 0.34, {140,160,140}, 1);
+        std::snprintf(buf, sizeof(buf), "PWM %+.1f | Steer %+.1f deg", cmd_pwm_actual, cmd_steer_actual);
+        cv::Scalar cmd_col = (cmd_pwm_actual < -5.0) ? cv::Scalar(100,100,255) : cv::Scalar(160,220,160);
+        cv::putText(panel, buf, {C1, R3+2}, cv::FONT_HERSHEY_SIMPLEX, 0.50, cmd_col, 1);
     }
 
     // ── 지도 패널 ─────────────────────────────────────────────
     void drawMap(cv::Mat panel,
                  const std::vector<Pt> & path,
                  const std::vector<Pt> & traveled,
-                 double vx, double vy, double vyaw, double vvx, double steer,
+                 double vx, double vy, double vyaw, double vvx, double steer_hw,
                  bool has_odom, bool has_path, int ni,
                  double scale, double ox, double oy,
                  double cte, double hdg_err)
@@ -255,38 +397,36 @@ private:
                      WIN_H - (int)((wy-oy)*scale) };
         };
         if (!has_path) {
-            cv::putText(panel, "Waiting for /global_path ...",
+            cv::putText(panel, "Waiting /global_path ...",
                         {20, WIN_H/2}, cv::FONT_HERSHEY_SIMPLEX, 0.7,
                         {160,160,160}, 1);
             return;
         }
         // 5m 그리드
         {
-            const double g5 = 5.0;
             double x1 = ox + MAP_W/scale, y1 = oy + WIN_H/scale;
-            for (double gx=std::floor(ox/g5)*g5; gx<=x1; gx+=g5)
+            for (double gx=std::floor(ox/5)*5; gx<=x1; gx+=5)
                 cv::line(panel, w2p(gx,oy), w2p(gx,y1), {45,50,45}, 1);
-            for (double gy=std::floor(oy/g5)*g5; gy<=y1; gy+=g5)
+            for (double gy=std::floor(oy/5)*5; gy<=y1; gy+=5)
                 cv::line(panel, w2p(ox,gy), w2p(x1,gy), {45,50,45}, 1);
         }
-        // 글로벌 경로 (초록)
+        // 글로벌 경로
         for (size_t i = 1; i < path.size(); ++i)
-            cv::line(panel, w2p(path[i-1].x,path[i-1].y),
-                            w2p(path[i].x,  path[i].y),
+            cv::line(panel, w2p(path[i-1].x, path[i-1].y),
+                            w2p(path[i].x,   path[i].y),
                      {0,200,0}, 2, cv::LINE_AA);
-        // 방향 화살표
         for (size_t i = 0; i < path.size(); i += 20) {
             auto base = w2p(path[i].x, path[i].y);
             double len = 0.8 * scale;
             cv::arrowedLine(panel, base,
-                {base.x+(int)(len*std::cos(path[i].yaw)),
-                 base.y-(int)(len*std::sin(path[i].yaw))},
+                {base.x + (int)(len*std::cos(path[i].yaw)),
+                 base.y - (int)(len*std::sin(path[i].yaw))},
                 {0,150,0}, 1, cv::LINE_AA, 0, 0.35);
         }
-        // 주행 경로 (주황)
+        // 주행 경로
         for (size_t i = 1; i < traveled.size(); ++i)
-            cv::line(panel, w2p(traveled[i-1].x,traveled[i-1].y),
-                            w2p(traveled[i].x,  traveled[i].y),
+            cv::line(panel, w2p(traveled[i-1].x, traveled[i-1].y),
+                            w2p(traveled[i].x,   traveled[i].y),
                      {0,140,255}, 2, cv::LINE_AA);
         // 차량
         if (has_odom) {
@@ -294,12 +434,10 @@ private:
             int r = std::max(6, (int)(0.45*scale));
             cv::circle(panel, vp, r, {50,50,220}, -1);
             cv::circle(panel, vp, r, {255,255,255}, 1);
-            double alen = r*2.8;
             cv::arrowedLine(panel, vp,
-                {vp.x+(int)(alen*std::cos(vyaw)),
-                 vp.y-(int)(alen*std::sin(vyaw))},
+                {vp.x+(int)(r*2.8*std::cos(vyaw)),
+                 vp.y-(int)(r*2.8*std::sin(vyaw))},
                 {80,80,255}, 2, cv::LINE_AA, 0, 0.3);
-            // 오차선
             if (!path.empty()) {
                 auto rp = w2p(path[ni].x, path[ni].y);
                 cv::line(panel, vp, rp, {0,230,230}, 1, cv::LINE_AA);
@@ -308,25 +446,25 @@ private:
             // 상태 텍스트
             char buf[160];
             std::snprintf(buf, sizeof(buf),
-                "v=%.2f m/s  steer=%.1f deg  CTE=%.3f m  HE=%.1f deg",
-                std::abs(vvx), steer, cte, hdg_err);
+                "v=%.2f m/s  hw_steer=%.1fdeg  CTE=%.3fm  HE=%.1fdeg",
+                vvx, steer_hw, cte, hdg_err);
             cv::rectangle(panel,{0,WIN_H-32},{MAP_W,WIN_H},{20,20,20},-1);
             cv::putText(panel, buf, {8,WIN_H-10},
-                        cv::FONT_HERSHEY_SIMPLEX, 0.50, {220,220,220}, 1);
+                        cv::FONT_HERSHEY_SIMPLEX, 0.48, {220,220,220}, 1);
             // 진행률 바
             if (!path.empty()) {
-                double prog=(path.size()>1)?(double)ni/(path.size()-1):0.0;
-                int bw=(int)(prog*(MAP_W-20));
+                double prog = (path.size()>1) ? (double)ni/(path.size()-1) : 0.0;
+                int bw = (int)(prog*(MAP_W-20));
                 cv::rectangle(panel,{10,WIN_H-45},{MAP_W-10,WIN_H-35},{50,50,50},-1);
                 cv::rectangle(panel,{10,WIN_H-45},{10+bw,WIN_H-35},{0,200,100},-1);
                 char pb[48];
                 std::snprintf(pb,sizeof(pb),"%.1f%%  %d/%d",
-                    prog*100.0, ni,(int)path.size());
-                cv::putText(panel, pb,{MAP_W/2-40,WIN_H-36},
+                    prog*100.0, ni, (int)path.size());
+                cv::putText(panel, pb, {MAP_W/2-40,WIN_H-36},
                             cv::FONT_HERSHEY_SIMPLEX, 0.38, {200,200,200}, 1);
             }
         }
-        cv::putText(panel, "MPC Path Monitor", {10,22},
+        cv::putText(panel, "MPC Debug Monitor", {10,22},
                     cv::FONT_HERSHEY_SIMPLEX, 0.60, {160,220,160}, 1);
     }
 
@@ -339,14 +477,15 @@ private:
     {
         const int W=panel.cols, H=panel.rows;
         panel.setTo(cv::Scalar(20,20,26));
-        for (int g=0; g<=4; ++g) {
-            int py=(int)((double)g/4*H);
+        for (int g=0; g<=2; ++g) {
+            int py=(int)((double)g/2*H);
             cv::line(panel,{0,py},{W,py},{42,42,52},1);
-            double val=y_hi-(double)g/4*(y_hi-y_lo);
-            char buf[20]; std::snprintf(buf,sizeof(buf),"%.1f",val);
-            cv::putText(panel,buf,{3,py>12?py-2:12},
-                        cv::FONT_HERSHEY_SIMPLEX,0.30,{110,110,120},1);
+            double val=y_hi-(double)g/2*(y_hi-y_lo);
+            char buf[20]; std::snprintf(buf,sizeof(buf),"%.0f",val);
+            cv::putText(panel,buf,{3,py>10?py-2:10},
+                        cv::FONT_HERSHEY_SIMPLEX,0.28,{110,110,120},1);
         }
+        // 0선
         if (y_lo<0 && y_hi>0) {
             int py0=(int)(y_hi/(y_hi-y_lo)*H);
             cv::line(panel,{0,py0},{W,py0},{80,80,100},1);
@@ -363,12 +502,12 @@ private:
             }
             int cx=(n-1)*(W-1)/(N_HIST-1);
             int cp=(int)((y_hi-std::clamp(data.back(),y_lo,y_hi))/(y_hi-y_lo)*H);
-            cv::circle(panel,{cx,cp},4,color,-1);
-            char vbuf[24]; std::snprintf(vbuf,sizeof(vbuf),"%.2f",data.back());
-            cv::putText(panel,vbuf,{W-52,14},cv::FONT_HERSHEY_SIMPLEX,0.42,color,1);
+            cv::circle(panel,{cx,cp},3,color,-1);
+            char vbuf[24]; std::snprintf(vbuf,sizeof(vbuf),"%+.2f",data.back());
+            cv::putText(panel,vbuf,{W-58,H-3},cv::FONT_HERSHEY_SIMPLEX,0.38,color,1);
         }
-        cv::putText(panel,label,{W/2-55,H-5},
-                    cv::FONT_HERSHEY_SIMPLEX,0.38,{170,170,170},1);
+        cv::putText(panel,label,{40,H-3},
+                    cv::FONT_HERSHEY_SIMPLEX,0.34,{170,170,170},1);
     }
 
     // ── 로그 패널 ─────────────────────────────────────────────
@@ -376,31 +515,24 @@ private:
     {
         const int W=panel.cols, H=panel.rows;
         panel.setTo(cv::Scalar(15,15,20));
-
-        // 제목
-        cv::putText(panel, "MPC Log", {6,14},
-                    cv::FONT_HERSHEY_SIMPLEX, 0.45, {160,200,160}, 1);
+        cv::putText(panel, "Node Log (/rosout)", {6,14},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.40, {160,200,160}, 1);
         cv::line(panel,{0,18},{W,18},{60,60,70},1);
-
-        // 최신 MAX_LOGS 줄 (아래에서 위 순서로 역순 출력)
         const int line_h = (H - 20) / MAX_LOGS;
         int shown = 0;
-        for (int i = (int)logs.size()-1; i >= 0 && shown < MAX_LOGS; --i) {
+        for (int i=(int)logs.size()-1; i>=0 && shown<MAX_LOGS; --i) {
             const auto & e = logs[i];
             cv::Scalar col;
             const char * prefix;
-            if      (e.level >= 50) { col={0,50,255};   prefix="[FATAL]"; }
-            else if (e.level >= 40) { col={0,80,255};   prefix="[ERROR]"; }
-            else if (e.level >= 30) { col={0,200,255};  prefix="[WARN] "; }
-            else                    { col={180,180,180}; prefix="[INFO] "; }
-
-            // 노드명 + 메시지 (길면 자름)
-            std::string line = std::string(prefix) + " [" + e.name + "] " + e.msg;
-            if ((int)line.size() > 72) line = line.substr(0,69) + "...";
-
-            int y = H - shown * line_h - 6;
-            cv::putText(panel, line, {6, y},
-                        cv::FONT_HERSHEY_SIMPLEX, 0.35, col, 1);
+            if      (e.level >= 50) { col={0,50,255};    prefix="[FAT]"; }
+            else if (e.level >= 40) { col={0,80,255};    prefix="[ERR]"; }
+            else if (e.level >= 30) { col={0,200,255};   prefix="[WRN]"; }
+            else                    { col={160,160,160}; prefix="[INF]"; }
+            std::string line = std::string(prefix)+" ["+e.name+"] "+e.msg;
+            if ((int)line.size() > 74) line = line.substr(0,71)+"...";
+            int y = H - shown*line_h - 4;
+            cv::putText(panel, line, {5, y},
+                        cv::FONT_HERSHEY_SIMPLEX, 0.32, col, 1);
             ++shown;
         }
     }
@@ -449,16 +581,23 @@ private:
 
     double veh_x_{0},veh_y_{0},veh_yaw_{0},veh_vx_{0};
     bool   has_odom_{false};
-    double steer_deg_{0}, cmd_steer_{0}, cmd_pwm_{0};
+    double steer_hw_{0}, cmd_steer_{0}, cmd_pwm_{0};
 
-    std::deque<double>   cte_hist_, hdg_hist_, spd_hist_, str_hist_;
+    // /mpc/debug 값
+    double dbg_e_y_{0}, dbg_e_psi_{0}, dbg_target_v_{0};
+    double dbg_speed_pwm_{0}, dbg_steer_cmd_{0};
+    int    dbg_nearest_{0}, dbg_direction_{1};
+    bool   dbg_goal_{false}, has_debug_{false};
+
+    std::deque<double>   cte_hist_, hdg_hist_, spd_hist_, str_hist_, pwm_hist_;
     std::deque<LogEntry> logs_;
 
-    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr       path_sub_;
-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr   odom_sub_;
-    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
-    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr    steer_sub_;
-    rclcpp::Subscription<rcl_interfaces::msg::Log>::SharedPtr  rosout_sub_;
+    rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr               path_sub_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr           odom_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr         cmd_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr            steer_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr  debug_sub_;
+    rclcpp::Subscription<rcl_interfaces::msg::Log>::SharedPtr          rosout_sub_;
     rclcpp::TimerBase::SharedPtr timer_;
 };
 

@@ -9,6 +9,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 
 #include "jeju_mpc/mpc_controller_cpp.hpp"
 
@@ -34,7 +35,8 @@ private:
     int  findNearestIndex(const VehicleState & state, int prev_idx) const;
     bool isGoalReached(const VehicleState & state) const;
 
-    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr     cmd_pub_;
+    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr                cmd_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr         debug_pub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr    odom_sub_;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr        path_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr        teleop_mode_sub_;

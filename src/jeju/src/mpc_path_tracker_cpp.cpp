@@ -79,7 +79,8 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
     const double gps_hdg_min = this->get_parameter("gps_heading_min_mps").as_double();
 
     // ── 토픽 ─────────────────────────────────────────────
-    cmd_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+    cmd_pub_   = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+    debug_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>("/mpc/debug", 20);
 
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
         "/odometry/filtered", 20,
@@ -404,6 +405,26 @@ void MPCPathTrackerCpp::controlLoop()
 
     prev_output_     = cur_out;
     has_prev_output_ = true;
+
+    // ── /mpc/debug 발행 ──────────────────────────────────
+    // [0]=e_y(m)  [1]=e_psi(deg)  [2]=target_v(m/s signed)
+    // [3]=speed_pwm  [4]=nearest_idx  [5]=direction(1/-1)
+    // [6]=steer_cmd(deg)  [7]=goal_reached  [8]=has_path
+    {
+        std_msgs::msg::Float64MultiArray dbg;
+        dbg.data = {
+            cur_out.e_y,
+            cur_out.e_psi * 180.0 / M_PI,
+            speed_mps,
+            speed_pwm,
+            static_cast<double>(cur_out.nearest_idx),
+            static_cast<double>(current_direction_),
+            cur_out.steer_deg,
+            goal_reached_latched_ ? 1.0 : 0.0,
+            has_path_ ? 1.0 : 0.0,
+        };
+        debug_pub_->publish(dbg);
+    }
 }
 
 }  // namespace jeju_mpc
