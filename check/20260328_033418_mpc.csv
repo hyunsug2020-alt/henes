@@ -1,0 +1,2 @@
+# MPC_PARAMS wheelbase_m=1.04 forward_speed_kmh=3 prediction_horizon=15 dt=0.1 use_dbm=1 w_d=1 w_theta=0.5 w_kappa=0.05 w_u=0.2 w_xy=2 w_psi=1 w_vx=0.5 w_vy=0.3 w_omega=0.3 w_delta_c=0.1 w_u_delta=0.2 w_u_torque=1e-05 mass_kg=150 inertia_kgm2=120 lf_m=0.52 lr_m=0.52 Ca_N_rad=25000 Cx_N=30000 mu=0.8
+timestamp_sec,x_m,y_m,yaw_deg,vx_mps,vy_mps,omega_rads,ref_x_m,ref_y_m,ref_yaw_deg,ref_kappa,cte_m,heading_err_deg,cmd_steer_deg,cmd_speed_pwm,cmd_torque,mpc_cost,nearest_idx,path_size,path_progress,dist_to_goal_m,path_len_m

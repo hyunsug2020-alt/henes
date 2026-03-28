@@ -64,7 +64,9 @@ MpcPathMakerNode::MpcPathMakerNode()
     odom_topic, 20, std::bind(&MpcPathMakerNode::odomCb, this, std::placeholders::_1));
 
   origin_sub_ = this->create_subscription<geometry_msgs::msg::Point>(
-    "/utm_origin", 10, std::bind(&MpcPathMakerNode::originCb, this, std::placeholders::_1));
+    "/utm_origin",
+    rclcpp::QoS(1).transient_local(),
+    std::bind(&MpcPathMakerNode::originCb, this, std::placeholders::_1));
 
   quality_sub_ = this->create_subscription<std_msgs::msg::Float64>(
     "/gps/quality", 10, std::bind(&MpcPathMakerNode::qualityCb, this, std::placeholders::_1));
@@ -137,6 +139,12 @@ void MpcPathMakerNode::publishPath()
 
 void MpcPathMakerNode::recordStep()
 {
+  static int dbg = 0;
+  if (++dbg % 30 == 1) {
+    RCLCPP_INFO(this->get_logger(),
+      "[DBG] have_odom=%d origin_set=%d quality=%.2f pts=%zu",
+      have_odom_, origin_set_, gps_quality_, global_path_.poses.size());
+  }
   if (!have_odom_ || !origin_set_) {
     return;
   }
@@ -177,11 +185,6 @@ void MpcPathMakerNode::recordStep()
     return;
   }
 
-  const double speed = std::hypot(vel_x_, vel_y_);
-  const double min_speed = (gps_quality_ > 0.8) ? 0.3 : 0.5;
-  if (speed < min_speed) {
-    return;
-  }
 
   last_local_x_ = local_x;
   last_local_y_ = local_y;

@@ -11,6 +11,8 @@ setup(
     name=package_name,
     version='2.0.0',
     packages=find_packages(include=['control', 'control.*', 'navigation', 'navigation.*', 'sensing', 'sensing.*']),
+    # NOTE: Python scripts are installed via CMakeLists.txt install(PROGRAMS ...)
+    # This setup.py is kept only for package import support (device_config, etc.)
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
@@ -27,22 +29,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'teleop_node = control.teleop_node:main',
-            'serial_bridge_node = control.serial_bridge_node:main',
-            # sensing
-            'status_info_node = sensing.status_info_node:main',
-            'wheel_odom_node = sensing.wheel_odom_node:main',
-            'imu_axis_check_gui.py = sensing.imu_axis_check_gui:main',
-            'sensor_monitor_gui.py = sensing.sensor_monitor_gui:main',
-            'gnss_velocity_bridge_node.py = sensing.gnss_velocity_bridge_node:main',
-            'dual_gnss_heading_node.py = sensing.dual_gnss_heading_node:main',
-            'eskf_node.py = sensing.eskf_node:main',
-            # navigation
-            'path_follower_node = navigation.path_follower_node:main',
-            'path_maker_node = navigation.path_maker_node:main',
-            'path_file_loader_node = navigation.path_file_loader_node:main',
-            # control
-            'device_config_tool = control.device_config:main',
+            'device_config_tool = sensing.device_config:main',
         ],
     },
 )

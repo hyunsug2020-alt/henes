@@ -199,15 +199,18 @@ public:
         vel_sub_=create_subscription<geometry_msgs::msg::TwistWithCovarianceStamped>(
             get_parameter("gps_vel_topic").as_string(),sq,
             std::bind(&ESKFNode::velCb,this,std::placeholders::_1));
-        dh_sub_=create_subscription<std_msgs::msg::Float64>(
-            get_parameter("dual_heading_topic").as_string(),10,
-            std::bind(&ESKFNode::dhCb,this,std::placeholders::_1));
-        dv_sub_=create_subscription<std_msgs::msg::Bool>(
-            get_parameter("dual_heading_valid_topic").as_string(),10,
-            std::bind(&ESKFNode::dvCb,this,std::placeholders::_1));
-        da_sub_=create_subscription<std_msgs::msg::Float64>(
-            get_parameter("dual_heading_accuracy_topic").as_string(),10,
-            std::bind(&ESKFNode::daCb,this,std::placeholders::_1));
+        const auto dh_topic = get_parameter("dual_heading_topic").as_string();
+        const auto dv_topic = get_parameter("dual_heading_valid_topic").as_string();
+        const auto da_topic = get_parameter("dual_heading_accuracy_topic").as_string();
+        if (!dh_topic.empty())
+            dh_sub_=create_subscription<std_msgs::msg::Float64>(
+                dh_topic,10,std::bind(&ESKFNode::dhCb,this,std::placeholders::_1));
+        if (!dv_topic.empty())
+            dv_sub_=create_subscription<std_msgs::msg::Bool>(
+                dv_topic,10,std::bind(&ESKFNode::dvCb,this,std::placeholders::_1));
+        if (!da_topic.empty())
+            da_sub_=create_subscription<std_msgs::msg::Float64>(
+                da_topic,10,std::bind(&ESKFNode::daCb,this,std::placeholders::_1));
 
         odom_pub_  =create_publisher<nav_msgs::msg::Odometry>("/odometry/filtered",10);
         hdg_pub_   =create_publisher<std_msgs::msg::Float64>("/eskf/heading_deg",10);
@@ -229,7 +232,15 @@ private:
                 RCLCPP_INFO(get_logger(),"ESKF 초기화 yaw=%.1f deg",y0*180/M_PI);}
             last_t_=t;return;}
         double dt=last_t_>0?t-last_t_:0;last_t_=t;
-        if(dt>0&&dt<0.5){eskf_->predict(a,w,dt);pub();}}
+        if(dt>0&&dt<0.5){
+            eskf_->predict(a,w,dt);
+            // IMU orientation으로 헤딩 보정 (자이로 바이어스 드리프트 방지)
+            // sigma 10° - 정지 시 드리프트 억제, GPS 속도 헤딩(~5°)이 이동 시 우선
+            Q4 qi(m->orientation.w,m->orientation.x,m->orientation.y,m->orientation.z);
+            if(qi.norm()>0.9){
+                eskf_->updateHdg(qyaw(qi)+yaw_off_,10.0*M_PI/180.0);
+            }
+            pub();}}
 
     void fixCb(const sensor_msgs::msg::NavSatFix::SharedPtr m){
         if(std::isnan(m->latitude)||std::isnan(m->longitude))return;
@@ -253,7 +264,8 @@ private:
         eskf_->updateVel(vel,&cov);
         double spd=hypot(vx,vy);
         if(spd>0.5&&!dual_valid_)
-            eskf_->updateHdg(atan2(vy,vx)+yaw_off_,
+            // GPS VTG 속도는 ENU 절대 방향 - yaw_off_는 IMU 장착 오프셋이므로 적용 안 함
+            eskf_->updateHdg(atan2(vy,vx),
                              std::max(5.0*M_PI/180/std::max(spd,0.5),0.01));}
 
     void dhCb(const std_msgs::msg::Float64::SharedPtr m){

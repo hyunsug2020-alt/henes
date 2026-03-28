@@ -16,15 +16,15 @@ serial_bridge_node:
 status_info_node:
   ros__parameters:
     imu_topic: /handsfree/imu
-    gps_fix_topic: /fix
-    gps_vel_topic: /ublox_gps/fix_velocity
+    gps_fix_topic: /gnss_left/fix
+    gps_vel_topic: /gnss_left/fix_velocity
     gps_heading_speed_threshold_mps: 0.7
     gps_heading_speed_hysteresis_mps: 0.2
     gps_heading_alpha: 0.35
     imu_bias_alpha: 0.1
     yaw_offset_deg: 0.0
-    dual_heading_topic: /dual_f9p/heading
-    dual_heading_valid_topic: /dual_f9p/heading_valid
+    dual_heading_topic: ''
+    dual_heading_valid_topic: ''
     dual_heading_timeout_sec: 0.5
     dual_heading_alpha: 1.0
 
@@ -37,15 +37,21 @@ mpc_path_follower_node:
     dt: 0.1
     goal_tolerance_m: 1.0
     max_steer_deg: 55.0
-    kappa_min: -0.9
-    kappa_max: 0.9
-    kappa_samples: 31
+
+    # ── 속도 PI 제어 ─────────────────────────────────
+    speed_kp: 30.0
+    speed_ki: 2.0
+    speed_integral_max: 15.0
 
     # ── Frenet fallback 가중치 ────────────────────────
     w_d: 1.0
     w_theta: 0.5
     w_kappa: 0.05
     w_u: 0.2
+
+    kappa_min: -0.9
+    kappa_max: 0.9
+    kappa_samples: 31
 
     # ── DBM 모드 ──────────────────────────────────────
     use_dbm: true

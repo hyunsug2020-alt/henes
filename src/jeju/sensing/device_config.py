@@ -53,21 +53,6 @@ BUILTIN_CONFIG: dict = {
             },
         },
         {
-            "name": "gps2",
-            "role": "gps",
-            "symlink": "henes_gps2",
-            "extra_symlinks": [],
-            "default_for_role": False,
-            "family": "F9P",
-            "notes": "Secondary GPS.",
-            "match": {
-                "method": "serial",
-                "vendor_id": "1546",
-                "product_id": "0502",
-                "serial_short": "DBTHP5CP",
-            },
-        },
-        {
             "name": "imu1",
             "role": "imu",
             "symlink": "henes_imu",

@@ -3,6 +3,7 @@
 #include <vector>
 
 #include <geometry_msgs/msg/twist.hpp>
+#include <geometry_msgs/msg/twist_with_covariance_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -30,7 +31,7 @@ private:
 
     static double yawFromQuaternion(const geometry_msgs::msg::Quaternion & q);
     static std::vector<RefPoint> pathFromMsg(const nav_msgs::msg::Path & msg);
-    int  findNearestIndex(const VehicleState & state) const;
+    int  findNearestIndex(const VehicleState & state, int prev_idx) const;
     bool isGoalReached(const VehicleState & state) const;
 
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr     cmd_pub_;
@@ -40,6 +41,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr        obstacle_stop_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr     slope_factor_sub_;
     rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr     steering_angle_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::TwistWithCovarianceStamped>::SharedPtr gps_vel_sub_;
     rclcpp::TimerBase::SharedPtr                                timer_;
 
     MPCControllerCpp    controller_;
@@ -68,6 +70,14 @@ private:
     int  nearest_idx_prev_       {0};
 
     double speed_integral_       {0.0};
+    double speed_kp_             {30.0};
+    double speed_ki_             { 2.0};
+    double speed_integral_max_   {15.0};
+
+    // GPS 속도 기반 헤딩 (ESKF 대체)
+    double gps_yaw_              {0.0};
+    double gps_speed_mps_        {0.0};
+    bool   has_gps_yaw_          {false};
 
     MPCControlOutput prev_output_;
     bool             has_prev_output_ {false};

@@ -16,13 +16,15 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
 : Node("mpc_path_tracker_cpp")
 {
     // ── 차량 / 제어 파라미터 ─────────────────────────────
+    this->declare_parameter("gps_vel_topic",       std::string("/gnss_left/fix_velocity"));
+    this->declare_parameter("gps_heading_min_mps", 0.3);
     this->declare_parameter("control_rate_hz",    20.0);
     this->declare_parameter("wheelbase_m",         1.04);
     this->declare_parameter("vehicle_width_m",     0.70);
     this->declare_parameter("vehicle_length_m",    1.30);
     this->declare_parameter("forward_speed_kmh",   8.0);
     this->declare_parameter("goal_tolerance_m",    1.0);
-    this->declare_parameter("max_steer_deg",       55.0);
+    this->declare_parameter("max_steer_deg",       90.0);
 
     // ── LTV-MPC 파라미터 ─────────────────────────────────
     this->declare_parameter("prediction_horizon",  10);
@@ -38,6 +40,11 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
     this->declare_parameter("a_max",                2.0);
     this->declare_parameter("a_min",               -3.0);
     this->declare_parameter("kappa_speed_factor",   3.0);
+
+    // ── 속도 PI 파라미터 ─────────────────────────────────
+    this->declare_parameter("speed_kp",            30.0);
+    this->declare_parameter("speed_ki",             2.0);
+    this->declare_parameter("speed_integral_max",  15.0);
 
     // ── 값 로딩 ──────────────────────────────────────────
     control_rate_hz_   = this->get_parameter("control_rate_hz").as_double();
@@ -63,7 +70,13 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
     controller_params_.a_min              = this->get_parameter("a_min").as_double();
     controller_params_.kappa_speed_factor = this->get_parameter("kappa_speed_factor").as_double();
 
+    speed_kp_           = this->get_parameter("speed_kp").as_double();
+    speed_ki_           = this->get_parameter("speed_ki").as_double();
+    speed_integral_max_ = this->get_parameter("speed_integral_max").as_double();
+
     controller_.updateParameters(controller_params_);
+
+    const double gps_hdg_min = this->get_parameter("gps_heading_min_mps").as_double();
 
     // ── 토픽 ─────────────────────────────────────────────
     cmd_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
@@ -97,6 +110,20 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
         "/steering_angle", 10,
         std::bind(&MPCPathTrackerCpp::steeringAngleCb, this, std::placeholders::_1));
 
+    // GPS 속도 기반 헤딩 구독 (ESKF 헤딩 대체)
+    const auto gps_vel_topic = this->get_parameter("gps_vel_topic").as_string();
+    gps_vel_sub_ = this->create_subscription<geometry_msgs::msg::TwistWithCovarianceStamped>(
+        gps_vel_topic, 20,
+        [this, gps_hdg_min](const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr msg) {
+            const double vx = msg->twist.twist.linear.x;
+            const double vy = msg->twist.twist.linear.y;
+            gps_speed_mps_ = std::hypot(vx, vy);
+            if (gps_speed_mps_ >= gps_hdg_min) {
+                gps_yaw_     = std::atan2(vy, vx);
+                has_gps_yaw_ = true;
+            }
+        });
+
     auto period = std::chrono::duration<double>(1.0 / std::max(control_rate_hz_, 1.0));
     timer_ = this->create_wall_timer(
         std::chrono::duration_cast<std::chrono::milliseconds>(period),
@@ -111,17 +138,20 @@ MPCPathTrackerCpp::MPCPathTrackerCpp()
 
 void MPCPathTrackerCpp::odomCb(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
-    const double yaw = yawFromQuaternion(msg->pose.pose.orientation);
+    // 위치: ESKF (GPS RTK 융합)
+    state_.x = msg->pose.pose.position.x;
+    state_.y = msg->pose.pose.position.y;
 
-    state_.x   = msg->pose.pose.position.x;
-    state_.y   = msg->pose.pose.position.y;
+    // 헤딩: GPS 속도 기반 (이동 중) / ESKF fallback (정지 시)
+    const double yaw = has_gps_yaw_ ? gps_yaw_
+                                    : yawFromQuaternion(msg->pose.pose.orientation);
     state_.yaw = yaw;
 
     const double steer_rad = current_steer_deg_ * M_PI / 180.0;
     state_.kappa   = std::tan(steer_rad) / std::max(wheelbase_m_, 0.01);
     state_.delta_c = steer_rad;
 
-    // world → body frame 변환
+    // world → body frame 속도 변환
     const double vwx = msg->twist.twist.linear.x;
     const double vwy = msg->twist.twist.linear.y;
     const double cy  = std::cos(yaw);
@@ -248,17 +278,44 @@ std::vector<RefPoint> MPCPathTrackerCpp::pathFromMsg(const nav_msgs::msg::Path &
     return out;
 }
 
-int MPCPathTrackerCpp::findNearestIndex(const VehicleState & state) const
+int MPCPathTrackerCpp::findNearestIndex(const VehicleState & state, int prev_idx) const
 {
-    int best = 0;
-    double best_d2 = std::numeric_limits<double>::max();
-    for (size_t i = 0; i < path_.size(); ++i) {
+    const int n = static_cast<int>(path_.size());
+
+    // 차량 헤딩 벡터
+    const double veh_cos = std::cos(state.yaw);
+    const double veh_sin = std::sin(state.yaw);
+
+    // 헤딩 일치 필터 + 전방 탐색:
+    //   - 전체 전방 경로를 탐색하되 (LTV-MPC 특성 유지)
+    //   - 차량과 경로 방향이 반대인 포인트는 제외 (U자/루프 지름길 방지)
+    //   - 헤딩 필터로 후보가 없으면 순수 거리 최소 포인트 사용 (fallback)
+    const int start = std::max(0,     prev_idx - 5);
+    const int end   = n - 1;
+
+    int best_hdg  = prev_idx;
+    int best_dist = prev_idx;
+    double best_d2_hdg  = std::numeric_limits<double>::max();
+    double best_d2_dist = std::numeric_limits<double>::max();
+
+    for (int i = start; i <= end; ++i) {
         const double dx = state.x - path_[i].x;
         const double dy = state.y - path_[i].y;
         const double d2 = dx*dx + dy*dy;
-        if (d2 < best_d2) { best_d2 = d2; best = static_cast<int>(i); }
+
+        // 전체 거리 최소 (fallback용)
+        if (d2 < best_d2_dist) { best_d2_dist = d2; best_dist = i; }
+
+        // 경로 방향과 차량 방향의 내적 > 0 → 같은 방향 포인트만 허용
+        const double path_cos = std::cos(path_[i].yaw);
+        const double path_sin = std::sin(path_[i].yaw);
+        if (veh_cos * path_cos + veh_sin * path_sin < 0.0) { continue; }
+
+        if (d2 < best_d2_hdg) { best_d2_hdg = d2; best_hdg = i; }
     }
-    return best;
+
+    // 헤딩 일치 후보가 있으면 사용, 없으면 거리 최소 fallback
+    return (best_d2_hdg < std::numeric_limits<double>::max()) ? best_hdg : best_dist;
 }
 
 bool MPCPathTrackerCpp::isGoalReached(const VehicleState & state) const
@@ -287,7 +344,7 @@ void MPCPathTrackerCpp::controlLoop()
         return;
     }
 
-    const int nearest_idx = findNearestIndex(state_);
+    const int nearest_idx = findNearestIndex(state_, nearest_idx_prev_);
 
     int dir = 1;
     if (!direction_profile_.empty() &&
@@ -316,12 +373,10 @@ void MPCPathTrackerCpp::controlLoop()
     const double v_actual  = state_.vx;
     const double v_error   = speed_mps - v_actual;
     const double dt        = 1.0 / std::max(control_rate_hz_, 1.0);
-    constexpr double kKp   = 10.0;
-    constexpr double kKi   =  2.0;
     speed_integral_ += v_error * dt;
-    speed_integral_  = std::clamp(speed_integral_, -100.0, 100.0);
+    speed_integral_  = std::clamp(speed_integral_, -speed_integral_max_, speed_integral_max_);
     const double speed_pwm = std::clamp(
-        (kKp * v_error + kKi * speed_integral_) * slope_factor_,
+        (speed_kp_ * v_error + speed_ki_ * speed_integral_) * slope_factor_,
         -255.0, 255.0);
 
     // 1-sample computation delay: 이전 최적해 실행, 현재 최적해 계산
@@ -332,7 +387,22 @@ void MPCPathTrackerCpp::controlLoop()
         cmd_pub_->publish(cmd);
     }
 
-    prev_output_     = controller_.computeControl(state_, path_, nearest_idx, speed_mps);
+    const auto cur_out = controller_.computeControl(state_, path_, nearest_idx, speed_mps);
+
+    // ── 2초마다 진단 로그 ─────────────────────────────────
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        "[MPC] idx=%d  pos=(%.2f,%.2f)  yaw=%.1f°  "
+        "e_y=%.3f m  e_psi=%.1f°  steer=%.1f°  spd_pwm=%.1f  v=%.2f m/s",
+        cur_out.nearest_idx,
+        state_.x, state_.y,
+        state_.yaw * 180.0 / M_PI,
+        cur_out.e_y,
+        cur_out.e_psi * 180.0 / M_PI,
+        cur_out.steer_deg,
+        speed_pwm,
+        v_actual);
+
+    prev_output_     = cur_out;
     has_prev_output_ = true;
 }
 

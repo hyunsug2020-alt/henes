@@ -97,10 +97,13 @@ MPCControlOutput MPCControllerCpp::computeControl(
         return out;
     }
 
-    out.steer_deg = res.steering * 180.0 / M_PI;
-    out.curvature = std::tan(res.steering) / std::max(params_.wheelbase_m, 0.01);
-    out.torque_cmd = res.accel;
-    out.cost       = e_y * e_y + e_psi * e_psi;
+    out.steer_deg   = res.steering * 180.0 / M_PI;
+    out.curvature   = std::tan(res.steering) / std::max(params_.wheelbase_m, 0.01);
+    out.torque_cmd  = res.accel;
+    out.cost        = e_y * e_y + e_psi * e_psi;
+    out.e_y         = e_y;
+    out.e_psi       = e_psi;
+    out.nearest_idx = nearest_idx;
 
     return out;
 }

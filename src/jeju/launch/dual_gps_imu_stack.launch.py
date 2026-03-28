@@ -12,14 +12,17 @@ GPS1 + IMU + ESKF 스택 런치 (GPS1 단독 운용)
   - ntrip_ros (NTRIP RTK 보정)
 """
 
+import os
 import sys
 from pathlib import Path
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
                              OpaqueFunction, SetLaunchConfiguration)
 from launch.conditions import IfCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.launch_description_sources import (AnyLaunchDescriptionSource,
+                                               PythonLaunchDescriptionSource)
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -75,6 +78,7 @@ def generate_launch_description():
     enable_imu          = DeclareLaunchArgument('enable_imu',          default_value='true')
     enable_ntrip        = DeclareLaunchArgument('enable_ntrip',        default_value='true')
     enable_eskf         = DeclareLaunchArgument('enable_eskf',         default_value='true')
+    enable_foxglove     = DeclareLaunchArgument('enable_foxglove',     default_value='true')
     utm_zone            = DeclareLaunchArgument('utm_zone',            default_value='52')
     yaw_offset_deg      = DeclareLaunchArgument('yaw_offset_deg',      default_value='0.0')
 
@@ -138,6 +142,9 @@ def generate_launch_description():
             'sigma_heading':     0.05,
             'yaw_offset_deg':    LaunchConfiguration('yaw_offset_deg'),
             'utm_zone':          LaunchConfiguration('utm_zone'),
+            'dual_heading_topic':          '',
+            'dual_heading_valid_topic':    '',
+            'dual_heading_accuracy_topic': '',
         }],
         condition=IfCondition(LaunchConfiguration('enable_eskf')),
     )
@@ -161,6 +168,20 @@ def generate_launch_description():
             'nmea_gga':         '',
         }],
         condition=IfCondition(LaunchConfiguration('enable_ntrip')),
+    )
+
+    # ================================================================
+    # Foxglove rosbridge WebSocket
+    # ================================================================
+    rosbridge_node = IncludeLaunchDescription(
+        AnyLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('rosbridge_server'),
+                'launch', 'rosbridge_websocket_launch.xml'
+            )
+        ),
+        launch_arguments={'port': '9090'}.items(),
+        condition=IfCondition(LaunchConfiguration('enable_foxglove')),
     )
 
     # ================================================================
@@ -192,6 +213,7 @@ def generate_launch_description():
         enable_imu,
         enable_eskf,
         enable_ntrip,
+        enable_foxglove,
         utm_zone,
         yaw_offset_deg,
         # 디바이스 탐색
@@ -201,5 +223,6 @@ def generate_launch_description():
         imu_launch,
         eskf_node,
         ntrip_node,
+        rosbridge_node,
         sensor_monitor_node,
     ])

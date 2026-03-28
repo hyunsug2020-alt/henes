@@ -25,6 +25,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 from geometry_msgs.msg import TwistWithCovarianceStamped
+from std_msgs.msg import Int32, Float64
 
 try:
     import serial
@@ -101,8 +102,10 @@ class GnssNmeaNode(Node):
         min_dt         = 1.0 / max(1.0, self.get_parameter('publish_hz').get_parameter_value().double_value)
         rtcm_topic     = self.get_parameter('rtcm_topic').get_parameter_value().string_value
 
-        self._fix_pub = self.create_publisher(NavSatFix, fix_topic, 10)
-        self._vel_pub = self.create_publisher(TwistWithCovarianceStamped, vel_topic, 10)
+        self._fix_pub      = self.create_publisher(NavSatFix, fix_topic, 10)
+        self._vel_pub      = self.create_publisher(TwistWithCovarianceStamped, vel_topic, 10)
+        self._quality_pub  = self.create_publisher(Int32, fix_topic.replace('/fix', '/gga_quality'), 10)
+        self._gps_qual_pub = self.create_publisher(Float64, '/gps/quality', 10)
 
         # RTCM 구독 (같은 시리얼 포트로 씀)
         self._rtcm_sub = None
@@ -136,16 +139,31 @@ class GnssNmeaNode(Node):
                     self.get_logger().error(f'RTCM write error: {e}')
 
     @staticmethod
-    def _ubx_enable_rtcm_input() -> bytes:
-        """UBX-CFG-VALSET: CFG-UART1INPROT-RTCM3X = 1 (all layers)"""
-        payload = bytes([0x00, 0x07, 0x00, 0x00,   # version=0, layers=RAM+BBR+Flash
-                         0x04, 0x00, 0x73, 0x10,   # key CFG-UART1INPROT-RTCM3X
-                         0x01])                     # value = true
+    def _ubx_cmd(msg_class: int, msg_id: int, payload: bytes) -> bytes:
         ck_a = ck_b = 0
-        for b in bytes([0x06, 0x8A]) + len(payload).to_bytes(2, 'little') + payload:
+        for b in bytes([msg_class, msg_id]) + len(payload).to_bytes(2, 'little') + payload:
             ck_a = (ck_a + b) & 0xFF
             ck_b = (ck_b + ck_a) & 0xFF
-        return b'\xB5\x62\x06\x8A' + len(payload).to_bytes(2, 'little') + payload + bytes([ck_a, ck_b])
+        return (b'\xB5\x62' + bytes([msg_class, msg_id]) +
+                len(payload).to_bytes(2, 'little') + payload + bytes([ck_a, ck_b]))
+
+    @staticmethod
+    def _ubx_enable_rtcm_input() -> bytes:
+        """UBX-CFG-VALSET: CFG-UART1INPROT-RTCM3X = 1 (RAM only)"""
+        payload = bytes([0x00, 0x01, 0x00, 0x00,   # version=0, layers=RAM
+                         0x04, 0x00, 0x73, 0x10,   # key CFG-UART1INPROT-RTCM3X
+                         0x01])                     # value = true
+        return GnssNmeaNode._ubx_cmd(0x06, 0x8A, payload)
+
+    @staticmethod
+    def _ubx_set_nav_rate(meas_ms: int = 100) -> bytes:
+        """UBX-CFG-RATE: 측정 주기 설정 (100ms = 10Hz)"""
+        payload = bytes([
+            meas_ms & 0xFF, (meas_ms >> 8) & 0xFF,  # measRate (ms)
+            0x01, 0x00,                               # navRate = 1
+            0x01, 0x00,                               # timeRef = GPS time
+        ])
+        return GnssNmeaNode._ubx_cmd(0x06, 0x08, payload)
 
     def _open_serial(self) -> bool:
         try:
@@ -154,6 +172,20 @@ class GnssNmeaNode(Node):
             with self._ser_lock:
                 self._ser = ser
             self.get_logger().info(f'Opened {self._port}')
+            # 측정 주기 10Hz 설정
+            try:
+                meas_ms = max(50, int(1000.0 / max(1.0, self.get_parameter('publish_hz')
+                                                    .get_parameter_value().double_value)))
+                ser.write(self._ubx_set_nav_rate(meas_ms))
+                self.get_logger().info(f'UBX nav rate set to {meas_ms}ms ({1000//meas_ms}Hz)')
+            except Exception as e:
+                self.get_logger().warn(f'Failed to set nav rate: {e}')
+            # RTCM 입력 활성화 (CFG-UART1INPROT-RTCM3X = 1)
+            try:
+                ser.write(self._ubx_enable_rtcm_input())
+                self.get_logger().info('UBX RTCM input enabled')
+            except Exception as e:
+                self.get_logger().warn(f'Failed to enable RTCM input: {e}')
             return True
         except serial.SerialException as e:
             self.get_logger().error(f'Cannot open {self._port}: {e}')
@@ -172,6 +204,7 @@ class GnssNmeaNode(Node):
             except serial.SerialException:
                 with self._ser_lock:
                     self._ser = None
+                time.sleep(1.0)
                 continue
 
             if not line.startswith('$'):
@@ -221,21 +254,42 @@ class GnssNmeaNode(Node):
         fix.latitude        = lat
         fix.longitude       = lon
         fix.altitude        = alt
-        h_var = (hdop * 2.5) ** 2   # 대략 수평 공분산 (HDOP × σ_base)
-        fix.position_covariance[0] = h_var
-        fix.position_covariance[4] = h_var
-        fix.position_covariance[8] = (h_var * 2.25)  # vertical ~1.5× horizontal
+        # quality별 base sigma
+        if quality == 4:      # RTK Fixed
+            sigma_h = 0.02
+            sigma_v = 0.05
+        elif quality == 5:    # RTK Float
+            sigma_h = hdop * 0.3
+            sigma_v = hdop * 0.6
+        elif quality == 2:    # DGPS
+            sigma_h = hdop * 0.5
+            sigma_v = hdop * 1.0
+        else:                 # standalone
+            sigma_h = hdop * 2.5
+            sigma_v = hdop * 3.75
+        fix.position_covariance[0] = sigma_h ** 2
+        fix.position_covariance[4] = sigma_h ** 2
+        fix.position_covariance[8] = sigma_v ** 2
         fix.position_covariance_type = NavSatFix.COVARIANCE_TYPE_APPROXIMATED
         self._fix_pub.publish(fix)
+        q_msg = Int32(); q_msg.data = quality
+        self._quality_pub.publish(q_msg)
+        # /gps/quality: Float64 0~1 (path maker용)
+        _Q = {4: 1.0, 5: 0.85, 2: 0.6, 1: 0.4, 0: 0.0}
+        gq = Float64(); gq.data = _Q.get(quality, 0.0)
+        self._gps_qual_pub.publish(gq)
 
         # 속도 (VTG 에서 가져온 값)
         vel = TwistWithCovarianceStamped()
         vel.header.stamp    = stamp
         vel.header.frame_id = self._frame_id
         spd = self._speed_mps
+        # VTG True course: 0°=North, 90°=East (clockwise from North)
+        # ENU frame: x=East, y=North
+        # vx_ENU = sin(course), vy_ENU = cos(course)
         crs = math.radians(self._course_deg)
-        vel.twist.twist.linear.x = spd * math.cos(crs)
-        vel.twist.twist.linear.y = spd * math.sin(crs)
+        vel.twist.twist.linear.x = spd * math.sin(crs)
+        vel.twist.twist.linear.y = spd * math.cos(crs)
         self._vel_pub.publish(vel)
 
     def _handle_vtg(self, line: str):

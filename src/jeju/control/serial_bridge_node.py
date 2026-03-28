@@ -20,7 +20,6 @@ class SerialBridgeNode(Node):
         self.declare_parameter('reconnect_interval', 2.0)
         self.declare_parameter('rx_watchdog_sec', 0.0)
         self.declare_parameter('cmd_topic', '/cmd_vel')
-        self.declare_parameter('max_steer_deg', 55)
 
         self.port               = str(self.get_parameter('port').value)
         self.baud               = int(self.get_parameter('baud').value)
@@ -28,7 +27,6 @@ class SerialBridgeNode(Node):
         self.reconnect_interval = float(self.get_parameter('reconnect_interval').value)
         self.rx_watchdog_sec    = float(self.get_parameter('rx_watchdog_sec').value)
         self.cmd_topic          = str(self.get_parameter('cmd_topic').value)
-        self.max_steer_deg      = int(self.get_parameter('max_steer_deg').value)
 
         self.ser, self.serial_connected = None, False
         self.ser_lock          = threading.Lock()
@@ -143,12 +141,7 @@ class SerialBridgeNode(Node):
             self.get_logger().error(f'전송 오류: {e}')
 
     def cmd_vel_callback(self, msg):
-        steer = int(msg.angular.z)
-        if steer > self.max_steer_deg:
-            steer = self.max_steer_deg
-        elif steer < -self.max_steer_deg:
-            steer = -self.max_steer_deg
-        self.send_json({'cmd': 'vel', 'linear': int(msg.linear.x), 'angular': steer})
+        self.send_json({'cmd': 'vel', 'linear': int(msg.linear.x), 'angular': int(msg.angular.z)})
 
     def kp_callback(self, msg):             self.send_json({'cmd': 'kp',           'value': msg.data})
     def ki_callback(self, msg):             self.send_json({'cmd': 'ki',           'value': msg.data})

@@ -46,9 +46,14 @@ add_executable(mpc_path_maker_node src/mpc_path_maker_node.cpp)
 target_include_directories(mpc_path_maker_node PRIVATE ${INC})
 ament_target_dependencies(mpc_path_maker_node rclcpp std_msgs geometry_msgs nav_msgs)
 
+add_executable(mpc_monitor_node src/mpc_monitor_node.cpp)
+target_include_directories(mpc_monitor_node PRIVATE ${OpenCV_INCLUDE_DIRS})
+ament_target_dependencies(mpc_monitor_node rclcpp rcl_interfaces std_msgs geometry_msgs nav_msgs)
+target_link_libraries(mpc_monitor_node ${OpenCV_LIBRARIES})
+
 add_executable(gps_rtk_gui_node src/gps_rtk_gui_node.cpp)
 target_include_directories(gps_rtk_gui_node PRIVATE ${OpenCV_INCLUDE_DIRS})
-ament_target_dependencies(gps_rtk_gui_node rclcpp std_msgs sensor_msgs ublox_ubx_msgs)
+ament_target_dependencies(gps_rtk_gui_node rclcpp std_msgs sensor_msgs geometry_msgs ublox_ubx_msgs)
 target_link_libraries(gps_rtk_gui_node ${OpenCV_LIBRARIES})
 
 # ── GPS/IMU 노드 ───────────────────────────────────────────────
@@ -76,13 +81,16 @@ install(PROGRAMS
   control/teleop_node.py
   control/serial_bridge_node.py
   navigation/path_file_loader_node.py
+  navigation/traveled_path_node.py
   sensing/gnss_nmea_node.py
   sensing/ntrip_client_node.py
   sensing/rtcm_serial_bridge_node.py
+  sensing/heading_calib.py
   DESTINATION lib/${PROJECT_NAME})
 
 # ── 바이너리 설치 ──────────────────────────────────────────────
 install(TARGETS
+  mpc_monitor_node
   mpc_path_follower_node
   mpc_logger_node
   mpc_path_maker_node

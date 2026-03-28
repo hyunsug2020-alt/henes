@@ -20,7 +20,7 @@ LAUNCH_REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(LAUNCH_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(LAUNCH_REPO_ROOT))
 
-from control.device_config import (
+from sensing.device_config import (
     default_device_config_path,
     format_device_resolution,
     load_device_config,

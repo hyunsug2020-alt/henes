@@ -74,6 +74,9 @@ struct MPCControlOutput
     double steer_deg  {0.0};  // [deg]
     double torque_cmd {0.0};  // LTV-MPC accel [m/s²]
     double cost       {0.0};
+    double e_y        {0.0};  // Frenet 횡방향 오차 [m]
+    double e_psi      {0.0};  // Frenet 헤딩 오차 [rad]
+    int    nearest_idx{0};    // 가장 가까운 경로 포인트 인덱스
 };
 
 // ── 컨트롤러 클래스 ──────────────────────────────────────────

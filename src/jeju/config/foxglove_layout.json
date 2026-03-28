@@ -1,0 +1,62 @@
+{
+  "configById": {
+    "3D!main": {
+      "cameraState": {
+        "distance": 30,
+        "perspective": false,
+        "phi": 1.5707963267948966,
+        "target": [0, 0, 0],
+        "targetOffset": [0, 0, 0],
+        "targetOrientation": [0, 0, 0, 1],
+        "thetaOffset": 0,
+        "fovy": 0.7853981633974483,
+        "near": 0.001,
+        "far": 5000
+      },
+      "followMode": "follow-pose",
+      "followTf": "base_link",
+      "scene": {
+        "enableStats": false,
+        "backgroundColor": "#303030"
+      },
+      "transforms": {},
+      "topics": {
+        "/global_path": {
+          "visible": true,
+          "color": "#00ff00ff"
+        },
+        "/traveled_path": {
+          "visible": true,
+          "color": "#ff8800ff"
+        },
+        "/odometry/filtered": {
+          "visible": true,
+          "color": "#ff1900ff",
+          "showCovariance": false
+        }
+      },
+      "layers": {
+        "Grid": {
+          "visible": true,
+          "layerId": "foxglove.Grid",
+          "size": 40,
+          "divisions": 20,
+          "color": "#a0a0a4ff",
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0],
+          "order": 1
+        }
+      },
+      "publish": {
+        "type": "point",
+        "poseTopic": "/move_base_simple/goal",
+        "pointTopic": "/clicked_point",
+        "poseEstimateTopic": "/initialpose"
+      }
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "linkedGlobalVariables": [],
+  "layout": "3D!main"
+}

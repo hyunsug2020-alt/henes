@@ -166,12 +166,18 @@ public:
         imu_sub_  = create_subscription<sensor_msgs::msg::Imu>(
             get_parameter("imu_topic").as_string(), sensor_qos,
             std::bind(&StatusInfoNode::imuCb, this, std::placeholders::_1));
-        dhdg_sub_ = create_subscription<std_msgs::msg::Float64>(
-            get_parameter("dual_heading_topic").as_string(), 10,
-            std::bind(&StatusInfoNode::dualHdgCb, this, std::placeholders::_1));
-        dval_sub_ = create_subscription<std_msgs::msg::Bool>(
-            get_parameter("dual_heading_valid_topic").as_string(), 10,
-            std::bind(&StatusInfoNode::dualValidCb, this, std::placeholders::_1));
+        const auto dual_hdg_topic  = get_parameter("dual_heading_topic").as_string();
+        const auto dual_val_topic  = get_parameter("dual_heading_valid_topic").as_string();
+        if (!dual_hdg_topic.empty()) {
+            dhdg_sub_ = create_subscription<std_msgs::msg::Float64>(
+                dual_hdg_topic, 10,
+                std::bind(&StatusInfoNode::dualHdgCb, this, std::placeholders::_1));
+        }
+        if (!dual_val_topic.empty()) {
+            dval_sub_ = create_subscription<std_msgs::msg::Bool>(
+                dual_val_topic, 10,
+                std::bind(&StatusInfoNode::dualValidCb, this, std::placeholders::_1));
+        }
 
         // ── 발행 ──
         odom_pub_    = create_publisher<nav_msgs::msg::Odometry>("/odometry/filtered", 10);

@@ -29,7 +29,7 @@ def generate_launch_description():
 
             # 고정 좌표 대신 실시간 /fix로 GGA를 생성한다.
             'nmea_gga': '',
-            'fix_topic': '/fix',
+            'fix_topic': '/gnss_left/fix',
             'require_live_gga': True,
         }]
     )

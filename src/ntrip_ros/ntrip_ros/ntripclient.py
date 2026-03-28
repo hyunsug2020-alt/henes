@@ -94,7 +94,7 @@ class NTRIPConnect(Thread):
                     f"Host: {server}:{port}\r\n"
                     f"Ntrip-Version: Ntrip/2.0\r\n"
                     f"User-Agent: NTRIP ntrip_ros\r\n"
-                    f"Connection: close\r\n"
+                    f"Connection: keep-alive\r\n"
                     f"Authorization: Basic {auth}\r\n"
                     f"\r\n"
                     f"{nmea_gga.rstrip()}\r\n"
@@ -153,16 +153,25 @@ class NTRIPConnect(Thread):
                     # RTCM 데이터 읽기
                     sock.settimeout(5)
                     
-                    if initial_data:
-                        self.process_rtcm_data(initial_data)
-                    
                     no_data_count = 0
+                    last_gga_time = time.time()
+                    rtcm_buf = bytearray(initial_data) if initial_data else bytearray()
                     while not self.stop and no_data_count < 10 and rclpy.ok():
+                        # VRS용 GGA 주기 재전송 (1초마다)
+                        if time.time() - last_gga_time > 1.0:
+                            gga_now, _ = self.node.get_nmea_gga_with_source()
+                            if gga_now:
+                                try:
+                                    sock.send((gga_now.rstrip() + '\r\n').encode())
+                                    last_gga_time = time.time()
+                                except Exception:
+                                    pass
                         try:
-                            data = sock.recv(1024)
+                            data = sock.recv(4096)
                             if data:
                                 no_data_count = 0
-                                self.process_rtcm_data(data)
+                                rtcm_buf.extend(data)
+                                rtcm_buf = bytearray(self.process_rtcm_data(rtcm_buf))
                             else:
                                 no_data_count += 1
                                 self.node.get_logger().warn(f"Empty data received ({no_data_count}/10)")
@@ -202,43 +211,38 @@ class NTRIPConnect(Thread):
                 self.backoff_time *= 1.5
 
     def process_rtcm_data(self, data):
+        """RTCM3 메시지 파싱. 불완전한 메시지는 남겨서 반환 (단편화 대응)."""
         if not data:
-            return 0
-        
+            return bytes()
+
         i = 0
         rtcm_msgs_found = 0
-        
+
         while i < len(data):
-            if i < len(data) and data[i] == 211: # 0xD3
-                if i + 3 < len(data):
-                    length = (data[i+1] << 8) + data[i+2]
-                    length &= 0x3FF
-                    
-                    if i + 5 < len(data):
-                        # msg_type = ((data[i+3] << 8) + data[i+4]) >> 4
-                        total_length = 3 + length + 3
-                        
-                        if i + total_length <= len(data):
-                            rtcm_msg = data[i:i+total_length]
-                            
-                            rmsg = Message()
-                            rmsg.header = Header()
-                            # ROS 2 Time 사용
-                            rmsg.header.stamp = self.node.get_clock().now().to_msg()
-                            rmsg.message = bytes(rtcm_msg)
-                            
-                            self.node.pub.publish(rmsg)
-                            rtcm_msgs_found += 1
-                            self.node.note_rtcm_activity(rtcm_msgs_found)
-                            
-                            i += total_length
-                            continue
-                        else:
-                            # 데이터가 잘렸을 경우 경고 (버퍼링 로직이 추가되면 좋음)
-                            # self.node.get_logger().warn(f"Incomplete RTCM message")
-                            pass
-            i += 1
-        return rtcm_msgs_found
+            # 0xD3 preamble 탐색
+            if data[i] != 0xD3:
+                i += 1
+                continue
+            # 헤더 3바이트 미만이면 다음 recv까지 보존
+            if i + 3 > len(data):
+                break
+            length = ((data[i+1] & 0x03) << 8) | data[i+2]
+            total_length = 3 + length + 3  # preamble(3) + payload + CRC(3)
+            # 메시지 전체가 버퍼에 없으면 다음 recv까지 보존
+            if i + total_length > len(data):
+                break
+
+            rtcm_msg = bytes(data[i:i+total_length])
+            rmsg = Message()
+            rmsg.header = Header()
+            rmsg.header.stamp = self.node.get_clock().now().to_msg()
+            rmsg.message = rtcm_msg
+            self.node.pub.publish(rmsg)
+            rtcm_msgs_found += 1
+            self.node.note_rtcm_activity(rtcm_msgs_found)
+            i += total_length
+
+        return bytes(data[i:])  # 남은(불완전한) 바이트 반환
 
 
 class NTRIPClient(Node):
@@ -271,7 +275,10 @@ class NTRIPClient(Node):
         self._gga_lock = Lock()
         self._live_nmea_gga = ''
         self._live_nmea_gga_time = 0.0
-        self._generated_gga = ''
+        self._fix_lat = 0.0
+        self._fix_lon = 0.0
+        self._fix_alt = 0.0
+        self._fix_quality = 0
         self._generated_gga_time = 0.0
         self._waiting_for_live_gga_logged = False
         self._waiting_for_any_gga_logged = False
@@ -317,7 +324,9 @@ class NTRIPClient(Node):
             if self._is_recent(self._live_nmea_gga_time):
                 return self._live_nmea_gga, 'live_topic'
             if self._is_recent(self._generated_gga_time):
-                return self._generated_gga, 'fix_topic'
+                # 전송 시점 timestamp로 새로 생성
+                gga = self._build_gga_from_stored()
+                return gga, 'fix_topic'
             if self.nmea_gga:
                 return self.nmea_gga, 'static'
             return '', 'none'
@@ -379,17 +388,47 @@ class NTRIPClient(Node):
             self._live_topic_gga_logged = True
 
     def fix_callback(self, msg: NavSatFix) -> None:
-        gga = self._build_gga_from_fix(msg)
-        if not gga:
+        lat = float(msg.latitude)
+        lon = float(msg.longitude)
+        alt = float(msg.altitude) if math.isfinite(msg.altitude) else 0.0
+        if not math.isfinite(lat) or not math.isfinite(lon):
             return
+        if abs(lat) > 90.0 or abs(lon) > 180.0:
+            return
+        if abs(lat) < 1e-9 and abs(lon) < 1e-9:
+            return
+        if msg.status.status == NavSatStatus.STATUS_NO_FIX:
+            return
+        quality = 2 if msg.status.status >= NavSatStatus.STATUS_SBAS_FIX else 1
         with self._gga_lock:
-            self._generated_gga = gga
+            self._fix_lat = lat
+            self._fix_lon = lon
+            self._fix_alt = alt
+            self._fix_quality = quality
             self._generated_gga_time = time.time()
         self._waiting_for_live_gga_logged = False
         self._waiting_for_any_gga_logged = False
         if not self._live_fix_gga_logged:
             self.get_logger().info(f"Generated live GGA from {self.fix_topic}")
             self._live_fix_gga_logged = True
+
+    def _build_gga_from_stored(self) -> str:
+        """저장된 위치로 현재 시간의 GGA 생성 (lock 내 호출 전용)."""
+        return self._make_gga(self._fix_lat, self._fix_lon, self._fix_alt, self._fix_quality)
+
+    @staticmethod
+    def _make_gga(lat: float, lon: float, alt: float, quality: int) -> str:
+        utc_now = time.gmtime()
+        utc_time = time.strftime('%H%M%S', utc_now) + '.00'
+        lat_dir = 'N' if lat >= 0.0 else 'S'
+        lon_dir = 'E' if lon >= 0.0 else 'W'
+        lat_field = _format_nmea_coordinate(lat, is_latitude=True)
+        lon_field = _format_nmea_coordinate(lon, is_latitude=False)
+        payload = (
+            f'GPGGA,{utc_time},{lat_field},{lat_dir},{lon_field},{lon_dir},'
+            f'{quality},08,1.0,{alt:.1f},M,0.0,M,,'
+        )
+        return f'${payload}*{_nmea_checksum(payload)}'
 
     def _build_gga_from_fix(self, msg: NavSatFix) -> str:
         lat = float(msg.latitude)
@@ -405,23 +444,8 @@ class NTRIPClient(Node):
         if msg.status.status == NavSatStatus.STATUS_NO_FIX:
             return ''
 
-        if msg.status.status >= NavSatStatus.STATUS_SBAS_FIX:
-            quality = 2
-        else:
-            quality = 1
-
-        utc_now = time.gmtime()
-        utc_time = time.strftime('%H%M%S', utc_now) + '.00'
-        lat_dir = 'N' if lat >= 0.0 else 'S'
-        lon_dir = 'E' if lon >= 0.0 else 'W'
-        lat_field = _format_nmea_coordinate(lat, is_latitude=True)
-        lon_field = _format_nmea_coordinate(lon, is_latitude=False)
-
-        payload = (
-            f'GPGGA,{utc_time},{lat_field},{lat_dir},{lon_field},{lon_dir},'
-            f'{quality},00,1.0,{alt:.1f},M,0.0,M,,'
-        )
-        return f'${payload}*{_nmea_checksum(payload)}'
+        quality = 2 if msg.status.status >= NavSatStatus.STATUS_SBAS_FIX else 1
+        return self._make_gga(lat, lon, alt, quality)
 
     def stop_connection(self):
         if self.connection is not None:
