@@ -301,7 +301,7 @@ int MPCPathTrackerCpp::findNearestIndex(const VehicleState & state, int prev_idx
     //   - 전체 전방 경로를 탐색하되 (LTV-MPC 특성 유지)
     //   - 차량과 경로 방향이 반대인 포인트는 제외 (U자/루프 지름길 방지)
     //   - 헤딩 필터로 후보가 없으면 순수 거리 최소 포인트 사용 (fallback)
-    const int start = std::max(0,     prev_idx - 5);
+    const int start = prev_idx;   // 역방향 탐색 금지 (항상 전진만)
     const int end   = std::min(n - 1, prev_idx + nearest_search_window_);
 
     int best_hdg  = prev_idx;

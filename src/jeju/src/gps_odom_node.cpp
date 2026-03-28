@@ -13,6 +13,8 @@
 //   /gps_odom/heading_deg   (std_msgs/Float64)
 // ============================================================
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <string>
 
 #include <rclcpp/rclcpp.hpp>
@@ -64,12 +66,16 @@ public:
         declare_parameter("base_frame",        std::string("base_footprint"));
         declare_parameter("gps_fix_topic",     std::string("/gnss_left/fix"));
         declare_parameter("gps_vel_topic",     std::string("/gnss_left/fix_velocity"));
-        declare_parameter("heading_min_mps",   0.15);   // 헤딩 갱신 최소 GPS 속도
+        declare_parameter("heading_min_m",     0.05);  // RTK 위치 기반 헤딩 갱신 최소 이동 거리 [m]
+        declare_parameter("max_speed_mps",     3.0);   // 발행 속도 상한 [m/s] (GPS 스파이크 방지)
+        declare_parameter("origin_file",       std::string("/tmp/gps_odom_origin.txt"));
 
-        utm_zone_    = get_parameter("utm_zone").as_int();
-        odom_frame_  = get_parameter("odom_frame").as_string();
-        base_frame_  = get_parameter("base_frame").as_string();
-        hdg_min_     = get_parameter("heading_min_mps").as_double();
+        utm_zone_      = get_parameter("utm_zone").as_int();
+        odom_frame_    = get_parameter("odom_frame").as_string();
+        base_frame_    = get_parameter("base_frame").as_string();
+        hdg_min_m_     = get_parameter("heading_min_m").as_double();
+        max_speed_mps_ = get_parameter("max_speed_mps").as_double();
+        origin_file_   = get_parameter("origin_file").as_string();
 
         auto sq = rclcpp::SensorDataQoS();
         auto tl = rclcpp::QoS(1).reliable().transient_local();
@@ -86,8 +92,12 @@ public:
         orig_pub_ = create_publisher<geometry_msgs::msg::Point>("/utm_origin", tl);
         hdg_pub_  = create_publisher<std_msgs::msg::Float64>("/gps_odom/heading_deg", 10);
 
+        // ── 저장된 UTM 원점 로드 (재시작 시 좌표 연속성 유지) ──
+        loadOrigin();
+
         RCLCPP_INFO(get_logger(),
-            "GPS Odom 노드 시작 (UTM zone=%d, hdg_min=%.2f m/s)", utm_zone_, hdg_min_);
+            "GPS Odom 노드 시작 (UTM zone=%d, hdg_min_m=%.3f m, origin_file=%s)",
+            utm_zone_, hdg_min_m_, origin_file_.c_str());
     }
 
 private:
@@ -102,10 +112,12 @@ private:
         if (!got_origin_) {
             ox_ = xg;  oy_ = yg;
             got_origin_ = true;
+            saveOrigin();
             geometry_msgs::msg::Point pt;
             pt.x = xg;  pt.y = yg;
             orig_pub_->publish(pt);
-            RCLCPP_INFO(get_logger(), "UTM 원점 설정 (%.3f, %.3f)", xg, yg);
+            RCLCPP_INFO(get_logger(), "UTM 원점 설정 (%.3f, %.3f) → %s 저장",
+                        xg, yg, origin_file_.c_str());
         }
 
         pos_x_  = xg - ox_;
@@ -117,23 +129,35 @@ private:
             pos_cov_ = m->position_covariance[0];
         }
 
+        // ── RTK 위치 기반 헤딩 계산 ───────────────────────────
+        // velocity heading 대신 연속 GPS 위치 차이 사용
+        // RTK 정확도(2cm)로 5cm 이동만 해도 신뢰 가능
+        if (got_prev_pos_) {
+            const double dx   = pos_x_ - prev_pos_x_;
+            const double dy   = pos_y_ - prev_pos_y_;
+            const double dist = std::hypot(dx, dy);
+            if (dist >= hdg_min_m_) {
+                yaw_ = std::atan2(dy, dx);
+                std_msgs::msg::Float64 hd;
+                hd.data = yaw_ * 180.0 / M_PI;
+                hdg_pub_->publish(hd);
+            }
+        }
+        prev_pos_x_ = pos_x_;
+        prev_pos_y_ = pos_y_;
+        got_prev_pos_ = true;
+
         publishOdom();
     }
 
     // ── GPS 속도 (ENU: x=East, y=North) ─────────────────────
+    // 헤딩은 fixCb의 RTK 위치 차이로 계산 (더 정확)
+    // 여기서는 odom twist 계산용 속도 성분만 저장
     void velCb(const geometry_msgs::msg::TwistWithCovarianceStamped::SharedPtr m)
     {
         vx_enu_ = m->twist.twist.linear.x;   // East
         vy_enu_ = m->twist.twist.linear.y;   // North
         speed_  = std::hypot(vx_enu_, vy_enu_);
-
-        if (speed_ >= hdg_min_) {
-            yaw_ = std::atan2(vy_enu_, vx_enu_);  // ENU 기준 yaw
-
-            std_msgs::msg::Float64 hd;
-            hd.data = yaw_ * 180.0 / M_PI;
-            hdg_pub_->publish(hd);
-        }
         has_vel_ = true;
     }
 
@@ -163,10 +187,20 @@ private:
         odom.pose.covariance[7]  = pos_cov_;
         odom.pose.covariance[35] = 0.05;
 
-        // 속도 (ENU world frame — MPC tracker가 body-frame으로 변환)
+        // 속도: ENU → body frame 변환 후 상한 클램핑 (GPS 스파이크 방지)
         if (has_vel_) {
-            odom.twist.twist.linear.x = vx_enu_;
-            odom.twist.twist.linear.y = vy_enu_;
+            const double cy = std::cos(yaw_);
+            const double sy = std::sin(yaw_);
+            double vx =  vx_enu_ * cy + vy_enu_ * sy;  // 전진
+            double vy = -vx_enu_ * sy + vy_enu_ * cy;  // 횡방향
+            // 속도 크기 제한
+            const double spd = std::hypot(vx, vy);
+            if (spd > max_speed_mps_) {
+                const double scale = max_speed_mps_ / spd;
+                vx *= scale;  vy *= scale;
+            }
+            odom.twist.twist.linear.x = vx;
+            odom.twist.twist.linear.y = vy;
         }
 
         odom_pub_->publish(odom);
@@ -181,10 +215,37 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::Point>::SharedPtr orig_pub_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr hdg_pub_;
 
+    // ── UTM origin 파일 저장/로드 ────────────────────────────
+    void loadOrigin()
+    {
+        std::ifstream f(origin_file_);
+        if (!f.is_open()) return;
+        double ox, oy;
+        if (f >> ox >> oy) {
+            ox_ = ox;  oy_ = oy;
+            got_origin_ = true;
+            geometry_msgs::msg::Point pt;
+            pt.x = ox_;  pt.y = oy_;
+            orig_pub_->publish(pt);
+            RCLCPP_INFO(get_logger(), "UTM 원점 로드 (%.3f, %.3f) ← %s",
+                        ox_, oy_, origin_file_.c_str());
+        }
+    }
+
+    void saveOrigin()
+    {
+        std::ofstream f(origin_file_);
+        if (f.is_open()) {
+            f << std::fixed << std::setprecision(6) << ox_ << " " << oy_ << "\n";
+        }
+    }
+
     // ── 상태 ─────────────────────────────────────────────────
     int         utm_zone_;
     std::string odom_frame_, base_frame_;
-    double      hdg_min_;
+    double      hdg_min_m_;     // RTK 위치 기반 헤딩 갱신 최소 거리 [m]
+    double      max_speed_mps_; // 발행 속도 상한 [m/s]
+    std::string origin_file_;
 
     bool   got_origin_{false};
     double ox_{0.0}, oy_{0.0};
@@ -196,6 +257,10 @@ private:
     double vx_enu_{0.0}, vy_enu_{0.0}, speed_{0.0};
     double yaw_{0.0};
     bool   has_vel_{false};
+
+    // RTK 위치 기반 헤딩 계산용
+    double prev_pos_x_{0.0}, prev_pos_y_{0.0};
+    bool   got_prev_pos_{false};
 };
 
 int main(int argc, char ** argv)

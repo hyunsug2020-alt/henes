@@ -131,7 +131,7 @@ def generate_launch_description():
             'utm_zone':        LaunchConfiguration('utm_zone'),
             'gps_fix_topic':   '/gnss_left/fix',
             'gps_vel_topic':   '/gnss_left/fix_velocity',
-            'heading_min_mps': 0.15,
+            'heading_min_m':   0.05,  # RTK 위치 기반 헤딩 최소 이동 거리 [m]
         }],
     )
 
