@@ -53,7 +53,7 @@ target_link_libraries(mpc_monitor_node ${OpenCV_LIBRARIES})
 
 add_executable(gps_rtk_gui_node src/gps_rtk_gui_node.cpp)
 target_include_directories(gps_rtk_gui_node PRIVATE ${OpenCV_INCLUDE_DIRS})
-ament_target_dependencies(gps_rtk_gui_node rclcpp std_msgs sensor_msgs geometry_msgs ublox_ubx_msgs)
+ament_target_dependencies(gps_rtk_gui_node rclcpp std_msgs sensor_msgs geometry_msgs nav_msgs ublox_ubx_msgs)
 target_link_libraries(gps_rtk_gui_node ${OpenCV_LIBRARIES})
 
 # ── GPS/IMU 노드 ───────────────────────────────────────────────
@@ -78,6 +78,11 @@ target_link_libraries(eskf_node Eigen3::Eigen)
 
 add_executable(gps_odom_node src/gps_odom_node.cpp)
 ament_target_dependencies(gps_odom_node rclcpp std_msgs geometry_msgs sensor_msgs nav_msgs)
+
+# ── 로컬 경로 발행 노드 ─────────────────────────────────────
+add_executable(local_path_pub_node src/local_path_pub_cpp.cpp)
+target_include_directories(local_path_pub_node PRIVATE ${INC})
+ament_target_dependencies(local_path_pub_node rclcpp std_msgs geometry_msgs nav_msgs)
 
 # ── Python 스크립트 (GUI/제어/네비) ────────────────────────────
 install(PROGRAMS
@@ -104,12 +109,14 @@ install(TARGETS
   status_info_node
   eskf_node
   gps_odom_node
+  local_path_pub_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/  DESTINATION include)
 install(DIRECTORY launch    DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY config    DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY arduino   DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY sensing   DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

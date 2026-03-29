@@ -30,13 +30,39 @@ status_info_node:
 
 mpc_path_follower_node:
   ros__parameters:
-    # ── 공통 ─────────────────────────────────────────
+    # ── 차량 / 제어 공통 ──────────────────────────────
     wheelbase_m: 1.04
     forward_speed_kmh: 3.0
-    prediction_horizon: 15
-    dt: 0.1
     goal_tolerance_m: 1.0
     max_steer_deg: 55.0
+    vehicle_width_m: 0.70
+    vehicle_length_m: 1.30
+
+    # ── bisa-style 3-state LTV-MPC ────────────────────
+    # State: [e_y, e_psi, κ]   Input: dκ/dt
+    prediction_horizon: 15
+    dt: 0.1
+
+    # 상태 비용 가중치
+    Q_ey:    100.0
+    Q_epsi:   10.0
+    Q_kappa:   1.0
+    # 종단 비용
+    QN_ey:   200.0
+    QN_epsi:  20.0
+    QN_kappa:  2.0
+    # 입력 비용
+    R_dkappa:  0.5
+
+    # 하드 제약
+    kappa_max:  0.0    # 0 = max_steer_deg 에서 자동 계산 (tan(55°)/1.04 ≈ 1.37)
+    dkappa_max: 1.0    # 최대 곡률 변화율 [1/m/s]
+
+    # VelocityPlanner
+    a_lat_max: 1.0     # 최대 횡가속도 [m/s²]
+
+    # α-블렌딩 (0=신호만, 1=이전유지)
+    kappa_alpha: 0.40
 
     # ── 속도 PI 제어 ─────────────────────────────────
     speed_kp: 30.0
@@ -47,39 +73,7 @@ mpc_path_follower_node:
     nearest_search_window: 80
     cusp_cos_threshold: -0.9999
 
-    # ── Frenet fallback 가중치 ────────────────────────
-    w_d: 1.0
-    w_theta: 0.5
-    w_kappa: 0.05
-    w_u: 0.2
-
-    kappa_min: -0.9
-    kappa_max: 0.9
-    kappa_samples: 31
-
-    # ── DBM 모드 ──────────────────────────────────────
-    use_dbm: true
-
-    # ── 9-state DBM 물리 파라미터 ─────────────────────
-    mass_kg: 150.0
-    inertia_kgm2: 120.0
-    lf_m: 0.52
-    lr_m: 0.52
-    Ca_N_rad: 25000.0
-    Cx_N: 30000.0
-    Jw_kgm2: 0.05
-    r_w_m: 0.08
-    v_delta_max: 0.5
-    v_min_mps: 0.3
-    mu: 0.8
-
-    # ── 9-state DBM 비용 가중치 ───────────────────────
-    w_xy: 2.0
-    w_psi: 1.0
-    w_vx: 0.5
-    w_vy: 0.3
-    w_omega: 0.3
-    w_delta_c: 0.1
-    w_wheel: 0.01
-    w_u_delta: 0.2
-    w_u_torque: 0.00001
+    # ── 복구 동작 ─────────────────────────────────────
+    path_hold_ey_m: 2.0        # 이 값 초과 시 정지 [m]
+    osc_steer_thresh_deg: 20.0 # 조향 진동 임계 [deg]
+    osc_window: 6              # 진동 감지 윈도우 [샘플]

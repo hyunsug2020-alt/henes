@@ -171,6 +171,26 @@ def generate_launch_description():
     )
 
     # ================================================================
+    # 로컬 경로 발행 노드 (글로벌 경로 → 슬라이딩 윈도우 로컬 경로)
+    # /global_path + /odometry/filtered → /local_path
+    # ================================================================
+    local_path_node = Node(
+        package='jeju',
+        executable='local_path_pub_node',
+        name='local_path_pub',
+        output='screen',
+        parameters=[{
+            'local_path_size':       120,
+            'search_window':         150,
+            'max_index_step':         20,
+            'reinit_dist_thresh':      2.0,
+            'smooth_window':           2,
+            'corner_smooth_window':    0,
+            'corner_kappa_thresh':     0.08,
+        }],
+    )
+
+    # ================================================================
     # 센서 모니터 GUI
     # ================================================================
     sensor_monitor_node = Node(
@@ -208,5 +228,6 @@ def generate_launch_description():
         gps_odom_node,
         ntrip_node,
         rosbridge_node,
+        local_path_node,
         sensor_monitor_node,
     ])

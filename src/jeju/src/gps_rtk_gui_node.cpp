@@ -2,18 +2,21 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <deque>
 #include <limits>
 #include <string>
 
 #include <opencv2/opencv.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rmw/qos_profiles.h>
+#include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/nav_sat_status.hpp>
 #include <geometry_msgs/msg/twist_with_covariance_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float64.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <ublox_ubx_msgs/msg/ubx_nav_pvt.hpp>
 #include <ublox_ubx_msgs/msg/ubx_nav_rel_pos_ned.hpp>
 
@@ -24,7 +27,7 @@ namespace
 {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr int kWindowWidth  = 1500;
+constexpr int kWindowWidth  = 1960;   // 확장: MPC 디버그 패널 추가
 constexpr int kWindowHeight = 1080;
 const cv::Scalar kBg(18, 20, 24);
 const cv::Scalar kPanel(34, 37, 42);
@@ -36,6 +39,8 @@ const cv::Scalar kDanger(72, 92, 245);
 const cv::Scalar kWarn(60, 190, 255);
 const cv::Scalar kGood(88, 215, 124);
 const cv::Scalar kGps1(30, 180, 255);
+const cv::Scalar kMpcAccent(220, 160, 50);   // MPC 패널 강조색 (청록)
+const cv::Scalar kMpcPanel(22, 25, 30);      // MPC 패널 배경
 
 double wrap360(double deg)
 {
@@ -173,6 +178,60 @@ public:
         imu_az_ = msg->linear_acceleration.z;
         last_imu_time_ = now();
         has_imu_       = true;
+      });
+
+    // ── MPC 디버그 구독 ───────────────────────────────────
+    mpc_debug_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+      "/mpc/debug", rclcpp::SensorDataQoS(),
+      [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+        if (msg->data.size() < 9) return;
+        mpc_ey_          = msg->data[0];
+        mpc_epsi_deg_    = msg->data[1];
+        mpc_target_v_    = msg->data[2];
+        mpc_speed_pwm_   = msg->data[3];
+        mpc_nearest_idx_ = msg->data[4];
+        mpc_direction_   = msg->data[5];
+        mpc_steer_deg_   = msg->data[6];
+        mpc_goal_reached_= msg->data[7] > 0.5;
+        mpc_has_path_    = msg->data[8] > 0.5;
+        mpc_curvature_   = msg->data.size() > 9  ? msg->data[9]  : 0.0;
+        mpc_path_hold_   = msg->data.size() > 10 ? msg->data[10] > 0.5 : false;
+        mpc_oscillating_ = msg->data.size() > 11 ? msg->data[11] > 0.5 : false;
+        has_mpc_         = true;
+        last_mpc_time_   = now();
+        // 이력 저장
+        ey_history_.push_back(mpc_ey_);
+        if ((int)ey_history_.size() > kHistLen) ey_history_.pop_front();
+        steer_history_gui_.push_back(mpc_steer_deg_);
+        if ((int)steer_history_gui_.size() > kHistLen) steer_history_gui_.pop_front();
+      });
+
+    mpc_lap_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
+      "/mpc/lap_info", rclcpp::QoS(10),
+      [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+        if (msg->data.size() < 6) return;
+        lap_count_      = static_cast<int>(msg->data[0]);
+        lap_progress_   = msg->data[1];
+        lap_cur_wp_     = static_cast<int>(msg->data[2]);
+        lap_total_wp_   = static_cast<int>(msg->data[3]);
+        lap_elapsed_sec_= msg->data[4];
+        lap_total_dist_m_=msg->data[5];
+        has_lap_        = true;
+      });
+
+    odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+      "/odometry/filtered", rclcpp::SensorDataQoS(),
+      [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
+        odom_x_   = msg->pose.pose.position.x;
+        odom_y_   = msg->pose.pose.position.y;
+        const auto & q = msg->pose.pose.orientation;
+        odom_yaw_deg_ = std::atan2(
+          2.0*(q.w*q.z + q.x*q.y), 1.0 - 2.0*(q.y*q.y + q.z*q.z)) * 180.0 / kPi;
+        const double vx = msg->twist.twist.linear.x;
+        const double vy = msg->twist.twist.linear.y;
+        odom_speed_   = std::hypot(vx, vy);
+        has_odom_     = true;
+        last_odom_time_ = now();
       });
 
     cv::namedWindow(window_name_, cv::WINDOW_NORMAL);
@@ -575,25 +634,292 @@ private:
     cv::putText(img, buf, {c3, y0+dy*3}, cv::FONT_HERSHEY_SIMPLEX, 0.72, kText, 1, cv::LINE_AA);
   }
 
+  // ── MPC 내부 계산 디버그 패널 ─────────────────────────────
+  void drawMpcPanel(cv::Mat & img, const cv::Rect & rect) const
+  {
+    cv::rectangle(img, rect, kMpcPanel, cv::FILLED);
+    cv::rectangle(img, rect, kBorder, 2);
+    cv::rectangle(img, {rect.x, rect.y, rect.width, 8}, kMpcAccent, cv::FILLED);
+
+    const bool mpc_fresh = has_mpc_ && isFresh(last_mpc_time_);
+    char buf[256];
+
+    // title + status
+    cv::putText(img, "MPC DEBUG", {rect.x + 22, rect.y + 46},
+      cv::FONT_HERSHEY_DUPLEX, 1.0, kText, 2, cv::LINE_AA);
+    drawPill(img, {rect.x + rect.width - 150, rect.y + 52},
+      mpc_fresh ? "ACTIVE" : "WAIT", mpc_fresh ? kGood : kDanger);
+
+    int y = rect.y + 78;
+
+    // ── status flag pills ─────────────────────────────────
+    drawPill(img, {rect.x + 8,   y + 18},
+      mpc_has_path_ ? "PATH OK" : "NO PATH",
+      mpc_has_path_ ? kGood : kDanger, 0.52);
+    drawPill(img, {rect.x + 122, y + 18},
+      mpc_path_hold_ ? "HOLD!" : "TRACK",
+      mpc_path_hold_ ? kDanger : cv::Scalar(46, 58, 72), 0.52);
+    drawPill(img, {rect.x + 226, y + 18},
+      mpc_oscillating_ ? "OSC!" : "STABLE",
+      mpc_oscillating_ ? kWarn : cv::Scalar(46, 58, 72), 0.52);
+    drawPill(img, {rect.x + 332, y + 18},
+      mpc_goal_reached_ ? "GOAL" : "----",
+      mpc_goal_reached_ ? kGood : cv::Scalar(46, 58, 72), 0.52);
+    y += 54;
+
+    const int bx = rect.x + 12;
+    const int bw = rect.width - 24;
+    const int bar_h = 22;
+
+    // ── e_y 가로 바 (±3 m) ───────────────────────────────
+    {
+      const double EY_MAX = 3.0;
+      cv::Scalar ey_col = std::abs(mpc_ey_) < 0.3 ? kGood
+                        : std::abs(mpc_ey_) < 1.0 ? kWarn : kDanger;
+      cv::putText(img, "Lateral Error  e_y", {bx, y + 18},
+        cv::FONT_HERSHEY_SIMPLEX, 0.60, kMuted, 1, cv::LINE_AA);
+      std::snprintf(buf, sizeof(buf), "%+.3f m", mpc_fresh ? mpc_ey_ : 0.0);
+      cv::putText(img, buf, {rect.x + rect.width - 126, y + 18},
+        cv::FONT_HERSHEY_SIMPLEX, 0.70, mpc_fresh ? ey_col : kMuted, 2, cv::LINE_AA);
+      y += 26;
+      cv::Rect bar_bg(bx, y, bw, bar_h);
+      cv::rectangle(img, bar_bg, cv::Scalar(40, 44, 52), cv::FILLED);
+      cv::rectangle(img, bar_bg, cv::Scalar(72, 78, 88), 1);
+      cv::line(img, {bx + bw / 2, y}, {bx + bw / 2, y + bar_h},
+        cv::Scalar(100, 106, 114), 1);
+      if (mpc_fresh && mpc_has_path_) {
+        const double ratio = std::max(-1.0, std::min(1.0, mpc_ey_ / EY_MAX));
+        const int cx = bx + bw / 2;
+        const int px = cx + (int)(ratio * (bw / 2));
+        const int fill_w = std::abs(px - cx);
+        if (fill_w > 0) {
+          cv::rectangle(img, {std::min(cx, px), y + 3, fill_w, bar_h - 6}, ey_col, cv::FILLED);
+        }
+      }
+      cv::putText(img, "-3m", {bx + 2, y + bar_h + 15},
+        cv::FONT_HERSHEY_SIMPLEX, 0.40, kMuted, 1, cv::LINE_AA);
+      cv::putText(img, "0", {bx + bw / 2 - 5, y + bar_h + 15},
+        cv::FONT_HERSHEY_SIMPLEX, 0.40, kMuted, 1, cv::LINE_AA);
+      cv::putText(img, "+3m", {bx + bw - 36, y + bar_h + 15},
+        cv::FONT_HERSHEY_SIMPLEX, 0.40, kMuted, 1, cv::LINE_AA);
+      y += bar_h + 22;
+    }
+
+    // ── e_psi 가로 바 (±45 deg) ──────────────────────────
+    {
+      const double EPSI_MAX = 45.0;
+      cv::Scalar epsi_col = std::abs(mpc_epsi_deg_) < 10.0 ? kGood
+                          : std::abs(mpc_epsi_deg_) < 25.0 ? kWarn : kDanger;
+      cv::putText(img, "Heading Error  e_psi", {bx, y + 18},
+        cv::FONT_HERSHEY_SIMPLEX, 0.60, kMuted, 1, cv::LINE_AA);
+      std::snprintf(buf, sizeof(buf), "%+.1f deg", mpc_fresh ? mpc_epsi_deg_ : 0.0);
+      cv::putText(img, buf, {rect.x + rect.width - 126, y + 18},
+        cv::FONT_HERSHEY_SIMPLEX, 0.70, mpc_fresh ? epsi_col : kMuted, 2, cv::LINE_AA);
+      y += 26;
+      cv::Rect epsi_bg(bx, y, bw, bar_h);
+      cv::rectangle(img, epsi_bg, cv::Scalar(40, 44, 52), cv::FILLED);
+      cv::rectangle(img, epsi_bg, cv::Scalar(72, 78, 88), 1);
+      cv::line(img, {bx + bw / 2, y}, {bx + bw / 2, y + bar_h},
+        cv::Scalar(100, 106, 114), 1);
+      if (mpc_fresh && mpc_has_path_) {
+        const double ratio = std::max(-1.0, std::min(1.0, mpc_epsi_deg_ / EPSI_MAX));
+        const int cx = bx + bw / 2;
+        const int px = cx + (int)(ratio * (bw / 2));
+        const int fill_w = std::abs(px - cx);
+        if (fill_w > 0) {
+          cv::rectangle(img, {std::min(cx, px), y + 3, fill_w, bar_h - 6}, epsi_col, cv::FILLED);
+        }
+      }
+      cv::putText(img, "-45", {bx + 2, y + bar_h + 15},
+        cv::FONT_HERSHEY_SIMPLEX, 0.40, kMuted, 1, cv::LINE_AA);
+      cv::putText(img, "0", {bx + bw / 2 - 5, y + bar_h + 15},
+        cv::FONT_HERSHEY_SIMPLEX, 0.40, kMuted, 1, cv::LINE_AA);
+      cv::putText(img, "+45", {bx + bw - 34, y + bar_h + 15},
+        cv::FONT_HERSHEY_SIMPLEX, 0.40, kMuted, 1, cv::LINE_AA);
+      y += bar_h + 22;
+    }
+
+    // ── e_y 이력 그래프 (80 샘플) ─────────────────────────
+    {
+      const double EY_MAX = 3.0;
+      const int gh = 76;
+      cv::putText(img, "e_y history (80 samples)", {bx, y + 15},
+        cv::FONT_HERSHEY_SIMPLEX, 0.55, kMuted, 1, cv::LINE_AA);
+      y += 20;
+      cv::Rect gr(bx, y, bw, gh);
+      cv::rectangle(img, gr, cv::Scalar(28, 32, 40), cv::FILLED);
+      cv::rectangle(img, gr, cv::Scalar(72, 78, 88), 1);
+      const int mid = y + gh / 2;
+      cv::line(img, {bx, mid}, {bx + bw, mid}, cv::Scalar(80, 86, 94), 1);
+      // ±2m threshold lines (path-hold trigger)
+      const int thresh_y = (int)((gh / 2) * (2.0 / EY_MAX));
+      cv::line(img, {bx, mid - thresh_y}, {bx + bw, mid - thresh_y}, cv::Scalar(60, 72, 200), 1);
+      cv::line(img, {bx, mid + thresh_y}, {bx + bw, mid + thresh_y}, cv::Scalar(60, 72, 200), 1);
+      cv::putText(img, "+2m", {bx + bw + 2, mid - thresh_y + 5},
+        cv::FONT_HERSHEY_SIMPLEX, 0.36, cv::Scalar(80, 90, 200), 1, cv::LINE_AA);
+      cv::putText(img, "-2m", {bx + bw + 2, mid + thresh_y + 5},
+        cv::FONT_HERSHEY_SIMPLEX, 0.36, cv::Scalar(80, 90, 200), 1, cv::LINE_AA);
+      const int n = (int)ey_history_.size();
+      if (n >= 2) {
+        const double x_step = (double)bw / (kHistLen - 1);
+        for (int i = 0; i < n - 1; ++i) {
+          const int xi = bx + (int)(i * x_step);
+          const int xj = bx + (int)((i + 1) * x_step);
+          const auto clamp_v = [](double v, double lo, double hi) {
+            return v < lo ? lo : v > hi ? hi : v;
+          };
+          const int yi = mid - (int)(clamp_v(ey_history_[i] / EY_MAX, -1.0, 1.0) * (gh / 2));
+          const int yj = mid - (int)(clamp_v(ey_history_[i + 1] / EY_MAX, -1.0, 1.0) * (gh / 2));
+          const cv::Scalar lc = std::abs(ey_history_[i]) < 0.3 ? kGood
+                              : std::abs(ey_history_[i]) < 1.0 ? kWarn : kDanger;
+          cv::line(img, {xi, yi}, {xj, yj}, lc, 2, cv::LINE_AA);
+        }
+      }
+      y += gh + 12;
+    }
+
+    // ── 조향 게이지 아크 ──────────────────────────────────
+    {
+      const double STEER_MAX = 35.0;
+      cv::putText(img, "Steer Output (kappa -> delta)", {bx, y + 15},
+        cv::FONT_HERSHEY_SIMPLEX, 0.55, kMuted, 1, cv::LINE_AA);
+      std::snprintf(buf, sizeof(buf), "%+.1f deg", mpc_fresh ? mpc_steer_deg_ : 0.0);
+      cv::putText(img, buf, {rect.x + rect.width - 126, y + 15},
+        cv::FONT_HERSHEY_SIMPLEX, 0.68, kMpcAccent, 2, cv::LINE_AA);
+      y += 20;
+      const int arc_r = 56;
+      const cv::Point arc_c(rect.x + rect.width / 2, y + arc_r + 6);
+      // background arc: 120° → 420° (= 300° sweep, bottom-left to bottom-right via top)
+      cv::ellipse(img, arc_c, {arc_r, arc_r}, 0, 120, 420,
+        cv::Scalar(58, 64, 74), 10, cv::LINE_AA);
+      if (mpc_fresh) {
+        const double ratio = std::max(-1.0, std::min(1.0, mpc_steer_deg_ / STEER_MAX));
+        const cv::Scalar steer_c = std::abs(mpc_steer_deg_) < 10.0 ? kGood
+                                 : std::abs(mpc_steer_deg_) < 25.0 ? kWarn : kDanger;
+        // fill arc from 270° (top = neutral) toward the steer side
+        if (ratio > 0.0) {
+          cv::ellipse(img, arc_c, {arc_r, arc_r}, 0, 270,
+            270 + (int)(ratio * 150), steer_c, 10, cv::LINE_AA);
+        } else if (ratio < 0.0) {
+          cv::ellipse(img, arc_c, {arc_r, arc_r}, 0,
+            270 + (int)(ratio * 150), 270, steer_c, 10, cv::LINE_AA);
+        }
+        // needle
+        const double needle_ang = (270.0 + ratio * 150.0) * kPi / 180.0;
+        const cv::Point needle_tip(
+          arc_c.x + (int)(std::cos(needle_ang) * (arc_r - 6)),
+          arc_c.y + (int)(std::sin(needle_ang) * (arc_r - 6)));
+        cv::line(img, arc_c, needle_tip, kText, 3, cv::LINE_AA);
+        cv::circle(img, arc_c, 5, kText, cv::FILLED, cv::LINE_AA);
+      }
+      cv::putText(img, "L", {arc_c.x - arc_r - 20, arc_c.y + 8},
+        cv::FONT_HERSHEY_SIMPLEX, 0.56, kMuted, 1, cv::LINE_AA);
+      cv::putText(img, "R", {arc_c.x + arc_r + 8, arc_c.y + 8},
+        cv::FONT_HERSHEY_SIMPLEX, 0.56, kMuted, 1, cv::LINE_AA);
+      cv::putText(img, "0", {arc_c.x - 7, arc_c.y - arc_r - 8},
+        cv::FONT_HERSHEY_SIMPLEX, 0.44, kMuted, 1, cv::LINE_AA);
+      y += arc_r * 2 + 18;
+    }
+
+    // ── 곡률 + 속도 행 ────────────────────────────────────
+    {
+      const int col_w = (bw - 10) / 2;
+      // kappa 박스
+      cv::Rect kv(bx, y, col_w, 58);
+      cv::rectangle(img, kv, cv::Scalar(34, 38, 46), cv::FILLED);
+      cv::rectangle(img, kv, cv::Scalar(72, 78, 88), 1);
+      cv::putText(img, "kappa_r (ref)", {kv.x + 8, kv.y + 20},
+        cv::FONT_HERSHEY_SIMPLEX, 0.48, kMuted, 1, cv::LINE_AA);
+      std::snprintf(buf, sizeof(buf), "%+.4f/m", mpc_fresh ? mpc_curvature_ : 0.0);
+      cv::putText(img, buf, {kv.x + 8, kv.y + 48},
+        cv::FONT_HERSHEY_SIMPLEX, 0.60, kMpcAccent, 1, cv::LINE_AA);
+      // speed 박스
+      cv::Rect sv(bx + col_w + 10, y, col_w, 58);
+      cv::rectangle(img, sv, cv::Scalar(34, 38, 46), cv::FILLED);
+      cv::rectangle(img, sv, cv::Scalar(72, 78, 88), 1);
+      cv::putText(img, "tgt / act  m/s", {sv.x + 8, sv.y + 20},
+        cv::FONT_HERSHEY_SIMPLEX, 0.48, kMuted, 1, cv::LINE_AA);
+      const double spd_act = has_odom_ ? odom_speed_ : 0.0;
+      const bool spd_ok = mpc_fresh && std::abs(mpc_target_v_ - spd_act) < 0.5;
+      std::snprintf(buf, sizeof(buf), "%.1f / %.1f", mpc_target_v_, spd_act);
+      cv::putText(img, buf, {sv.x + 8, sv.y + 48},
+        cv::FONT_HERSHEY_SIMPLEX, 0.60, mpc_fresh ? (spd_ok ? kGood : kWarn) : kMuted,
+        1, cv::LINE_AA);
+      y += 66;
+    }
+
+    // ── 경로 진행 바 ──────────────────────────────────────
+    if (has_lap_) {
+      cv::putText(img, "Path Progress", {bx, y + 16},
+        cv::FONT_HERSHEY_SIMPLEX, 0.56, kMuted, 1, cv::LINE_AA);
+      std::snprintf(buf, sizeof(buf), "Lap%d  %.1f%%  %.0fm",
+        lap_count_, lap_progress_, lap_total_dist_m_);
+      cv::putText(img, buf, {rect.x + rect.width - 210, y + 16},
+        cv::FONT_HERSHEY_SIMPLEX, 0.48, kText, 1, cv::LINE_AA);
+      y += 22;
+      const int pb_h = 18;
+      cv::Rect pb(bx, y, bw, pb_h);
+      cv::rectangle(img, pb, cv::Scalar(40, 44, 52), cv::FILLED);
+      cv::rectangle(img, pb, cv::Scalar(72, 78, 88), 1);
+      const int fill_w = (int)(bw * std::max(0.0, std::min(100.0, lap_progress_)) / 100.0);
+      if (fill_w > 0) {
+        cv::rectangle(img, {bx, y, fill_w, pb_h}, kMpcAccent, cv::FILLED);
+      }
+      std::snprintf(buf, sizeof(buf), "WP: %d / %d", lap_cur_wp_, lap_total_wp_);
+      cv::putText(img, buf, {bx + 6, y + pb_h - 3},
+        cv::FONT_HERSHEY_SIMPLEX, 0.40, cv::Scalar(18, 20, 24), 1, cv::LINE_AA);
+      y += pb_h + 8;
+    }
+
+    // ── MPC 내부 계산 진단 체크리스트 ────────────────────
+    const int cl_y = rect.y + rect.height - 194;
+    cv::Rect cl(bx, cl_y, bw, 182);
+    cv::rectangle(img, cl, kPanel, cv::FILLED);
+    cv::rectangle(img, cl, kBorder, 1);
+    cv::putText(img, "MPC DIAGNOSTICS", {cl.x + 12, cl.y + 26},
+      cv::FONT_HERSHEY_SIMPLEX, 0.58, kMpcAccent, 2, cv::LINE_AA);
+
+    struct Check { const char * text; bool ok; };
+    const Check checks[] = {
+      {"[1] Path received & tracking active", mpc_has_path_ && mpc_fresh},
+      {"[2] |e_y| < 1.0 m  (lat. error)",    std::abs(mpc_ey_) < 1.0},
+      {"[3] |e_psi| < 25 deg  (yaw err)",    std::abs(mpc_epsi_deg_) < 25.0},
+      {"[4] No oscillation  (sign-change)",   !mpc_oscillating_},
+      {"[5] No path-hold  (|e_y|<2m)",        !mpc_path_hold_},
+    };
+    int cy = cl.y + 48;
+    for (const auto & c : checks) {
+      const bool valid = mpc_fresh;
+      const cv::Scalar col = !valid ? kMuted : c.ok ? kGood : kDanger;
+      const std::string pre = !valid ? "[?] " : c.ok ? "[OK] " : "[!!] ";
+      cv::putText(img, pre + c.text, {cl.x + 10, cy},
+        cv::FONT_HERSHEY_SIMPLEX, 0.50, col, 1, cv::LINE_AA);
+      cy += 26;
+    }
+  }
+
   void drawFrame()
   {
     cv::Mat img(kWindowHeight, kWindowWidth, CV_8UC3, kBg);
 
     // header
     cv::rectangle(img, {0, 0, kWindowWidth, 82}, cv::Scalar(26, 29, 34), cv::FILLED);
-    cv::putText(img, "HENES GPS1 + ESKF Monitor",
+    cv::putText(img, "HENES Sensor Monitor  +  MPC Debug",
       {36, 52}, cv::FONT_HERSHEY_DUPLEX, 1.2, kText, 2, cv::LINE_AA);
-    cv::putText(img, "GPS1 RTK  |  ESKF: position + heading  |  IMU",
-      {38, 76}, cv::FONT_HERSHEY_SIMPLEX, 0.58, kMuted, 1, cv::LINE_AA);
+    cv::putText(img, "GPS1 RTK  |  ESKF heading  |  IMU  |  MPC: e_y / e_psi / steer / curvature",
+      {38, 76}, cv::FONT_HERSHEY_SIMPLEX, 0.56, kMuted, 1, cv::LINE_AA);
 
     // GPS1 card (left)
     drawGps1Card(img, {34, 106, 700, 692});
 
-    // ESKF heading panel (right)
+    // ESKF heading panel (center-left)
     drawEskfPanel(img, {768, 106, 698, 848});
 
-    // IMU panel (bottom)
+    // IMU panel (bottom-left)
     drawImuPanel(img, {34, 822, 700, 234});
+
+    // MPC debug panel (right)
+    drawMpcPanel(img, {1490, 96, 446, 958});
 
     if (log_to_console_) {
       RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
@@ -641,6 +967,40 @@ private:
   std::string window_name_;
   double  topic_timeout_{1.5};
   bool    log_to_console_{true};
+
+  // ── MPC 디버그 ─────────────────────────────────────────
+  // /mpc/debug : [0]=e_y [1]=e_psi° [2]=target_v [3]=speed_pwm
+  //              [4]=nearest_idx [5]=direction [6]=steer° [7]=goal
+  //              [8]=has_path [9]=curvature [10]=path_hold [11]=oscillating
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr mpc_debug_sub_;
+  bool   has_mpc_{false};
+  rclcpp::Time last_mpc_time_{0, 0, RCL_ROS_TIME};
+  double mpc_ey_{0.0}, mpc_epsi_deg_{0.0};
+  double mpc_target_v_{0.0}, mpc_speed_pwm_{0.0};
+  double mpc_nearest_idx_{0.0}, mpc_direction_{1.0};
+  double mpc_steer_deg_{0.0}, mpc_curvature_{0.0};
+  bool   mpc_goal_reached_{false};
+  bool   mpc_has_path_{false};
+  bool   mpc_path_hold_{false};
+  bool   mpc_oscillating_{false};
+  std::deque<double> ey_history_;        // e_y 이력 (최대 80샘플)
+  std::deque<double> steer_history_gui_; // 조향 이력 (최대 80샘플)
+  static constexpr int kHistLen = 80;
+
+  // /mpc/lap_info : [0]=lap_count [1]=progress% [2]=cur_wp
+  //                 [3]=total_wp [4]=elapsed_sec [5]=total_dist_m
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr mpc_lap_sub_;
+  bool   has_lap_{false};
+  int    lap_count_{0};
+  double lap_progress_{0.0};
+  int    lap_cur_wp_{0}, lap_total_wp_{0};
+  double lap_elapsed_sec_{0.0}, lap_total_dist_m_{0.0};
+
+  // /odometry/filtered : 차량 위치/헤딩
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  bool   has_odom_{false};
+  double odom_x_{0.0}, odom_y_{0.0}, odom_yaw_deg_{0.0}, odom_speed_{0.0};
+  rclcpp::Time last_odom_time_{0, 0, RCL_ROS_TIME};
 };
 
 }  // namespace jeju_mpc
